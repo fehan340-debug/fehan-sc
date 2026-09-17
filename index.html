@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>NASDAQ Scanner</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#f5f6f8;color:#111}body:not(.session-ok)>.wrap{display:none!important}body:not(.session-ok){overflow:hidden}
+.wrap{max-width:980px;margin:auto;padding:14px}
+.top{display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:20;background:#f5f6f8;padding:4px 0 12px}
+.menu{width:48px;height:48px;border:0;border-radius:14px;background:#111;color:#fff;font-size:25px;cursor:pointer}
+.title{font-size:22px;font-weight:900;flex:1}.small{font-size:12px;color:#666}
+.card{background:#fff;border-radius:20px;padding:18px;box-shadow:0 4px 20px #00000012;margin-bottom:14px}
+h1{font-size:23px;margin:0 0 8px}h2{margin:0 0 12px;font-size:20px}
+.sub{color:#666;font-size:14px;line-height:1.7}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:650px){.grid{grid-template-columns:1fr}}
+label{font-weight:700;font-size:15px;display:block;margin-bottom:6px}
+input,select{width:100%;padding:14px;border:1px solid #d4d7dc;border-radius:14px;font-size:17px;background:#fff}
+.note{font-size:13px;color:#666;line-height:1.6;margin-top:5px}
+.keys{background:#fafafa}
+.actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}.btn{border:0;border-radius:12px;padding:11px 13px;font-size:14px;font-weight:800;min-height:42px;flex:1 1 140px;cursor:pointer;white-space:nowrap}.actions .btn{min-width:0} @media(max-width:520px){.actions{gap:7px}.actions .btn{flex:1 1 calc(50% - 7px);padding:10px 8px;font-size:13px;min-height:40px}}
+.start{background:#16a34a;color:#fff}.stop{background:#dc2626;color:#fff}.secondary{background:#111;color:#fff}.btn:disabled{opacity:.45}
+.status{margin-top:12px;padding:13px;border-radius:13px;background:#f0f2f5;line-height:1.7}
+.table-wrap{overflow:auto;border-radius:14px;border:1px solid #e2e4e8}
+table{width:100%;border-collapse:collapse;min-width:920px}
+th,td{padding:11px 9px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap}
+th{background:#f7f7f8;position:sticky;top:0}.muted{color:#777}.ok{color:#08752f}.err{color:#b91c1c}
+.section{display:none}.section.active{display:block}
+.drawer{position:fixed;inset:0;background:#0007;z-index:50;display:none}
+.drawer.open{display:block}.drawerBox{width:min(330px,88vw);height:100%;background:#fff;padding:22px;box-shadow:0 0 30px #0003}
+.drawerBox h3{margin-top:0}.navBtn{width:100%;padding:15px;margin:7px 0;border:0;border-radius:14px;background:#f1f2f4;text-align:right;font-size:17px;font-weight:800;cursor:pointer}
+.navBtn.active{background:#111;color:#fff}.close{float:left;border:0;background:none;font-size:24px}
+.calcbox{background:#f8f9fb;border-radius:16px;padding:16px;margin-top:12px}
+.big{font-size:25px;font-weight:900}.pill{display:inline-block;padding:6px 9px;border-radius:9px;background:#eef7ff;margin:3px}
+
+.authOverlay{position:fixed;inset:0;background:#f5f6f8;z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:18px;overflow-y:auto;-webkit-overflow-scrolling:touch;height:100dvh;min-height:100vh}
+.authBox{width:min(470px,100%);background:#fff;border-radius:28px;padding:26px;box-shadow:0 16px 55px #00000012;margin:auto 0;flex:0 0 auto;border:1px solid #eef0f3}
+.authHero{background:linear-gradient(135deg,#f0fdf4,#eff6ff);border-radius:22px;padding:20px;margin-bottom:20px;border:1px solid #e6eef4}
+.authLogo{width:54px;height:54px;border-radius:16px;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;font-size:27px;margin-bottom:13px;box-shadow:0 8px 20px #0002}
+.authHero h1{font-size:27px;margin:0 0 7px}.authHero p{margin:0;color:#5b6470;line-height:1.8;font-size:14px}
+.authSectionTitle{font-size:15px;font-weight:900;margin:18px 0 8px;color:#20242a}
+.authField{margin-bottom:12px}.authField label{font-size:14px;margin-bottom:5px}.authField input{margin-top:0!important;background:#fbfcfd}
+.authLoginBtn{width:100%;margin-top:5px!important;box-shadow:0 8px 18px #16a34a24}
+.authBenefits{display:grid;gap:8px;margin:16px 0}.authBenefit{display:flex;gap:9px;align-items:flex-start;color:#4b5563;font-size:13px;line-height:1.65}.authBenefit b{color:#111}
+.authSubscribe{margin-top:18px;background:#fafafa;border:1px solid #eceef1;border-radius:18px;padding:15px}.authSubscribe summary{cursor:pointer;font-weight:900;font-size:15px}.authSubscribe .sub{margin-top:9px}
+.authMsg{min-height:20px}.maintenanceBanner{display:flex;align-items:flex-start;gap:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:18px;padding:14px;margin:0 0 18px}.maintenanceIcon{width:42px;height:42px;border-radius:13px;background:#fff;color:#9a3412;display:flex;align-items:center;justify-content:center;font-size:21px;flex:0 0 42px}.maintenanceBanner h2{font-size:18px;margin:0 0 4px}.maintenanceBanner p{margin:0;color:#7c2d12;line-height:1.7;font-size:13px}
+@media(max-width:600px){
+  .authOverlay{align-items:flex-start;padding:12px 10px 28px;overflow-y:auto}
+  .authBox{margin:0 auto;padding:18px 16px}
+}
+.authBox h1{margin-bottom:6px}.authBox input,.authBox select,.authBox textarea{width:100%;padding:13px;border:1px solid #ddd;border-radius:12px;margin-top:6px}
+.authMsg{margin-top:10px;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.hidden{display:none!important}
+.accountBar{display:none}
+.badge{padding:6px 9px;border-radius:9px;background:#eef7ff;font-size:12px;font-weight:800}.favBtn{border:1px solid #e5e7eb;background:#fff;border-radius:10px;width:36px;height:34px;cursor:pointer;font-size:19px;line-height:1}.favBtn.on{background:#fff7d6;border-color:#f1c40f}.favCell{display:flex;align-items:center;justify-content:center;gap:8px}.favMeta{font-size:13px;color:#6b7280;margin-top:5px}.favRefresh{min-width:180px}.favTable table{min-width:820px}.favEmpty{padding:28px;text-align:center;color:#6b7280;line-height:1.8}.favActions{display:flex;gap:8px;align-items:center;justify-content:center}.favTickerCell{display:flex;gap:8px;align-items:center;justify-content:center}.favRemoveMini{border:1px solid #f1c40f;background:#fff7d6;border-radius:9px;width:30px;height:30px;cursor:pointer;font-size:16px}.detailsBtn{border:0;border-radius:10px;padding:9px 12px;background:#eef2ff;color:#27346a;font-weight:900;cursor:pointer}.detailsBtn:disabled{opacity:.5}.testBtn{border:0;border-radius:10px;padding:9px 12px;background:#111;color:#fff;font-weight:800;cursor:pointer}.testBtn:disabled{opacity:.5}.testModal{position:fixed;inset:0;background:#0008;z-index:130;display:none;align-items:center;justify-content:center;padding:18px}.testModal.show{display:flex}.testBox{width:min(520px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:22px;padding:22px;box-shadow:0 14px 45px #0005}.testHead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}.testClose{border:0;background:#f1f2f4;border-radius:10px;width:38px;height:38px;font-size:22px;cursor:pointer}.testRows{display:grid;gap:9px}.testRow{display:flex;justify-content:space-between;gap:12px;padding:12px;border:1px solid #e8eaed;border-radius:13px}.testLabel{color:#555}.testValue{font-weight:900}.testNote{font-size:12px;color:#777;line-height:1.7;margin-top:13px}.replyModalText{color:#111;background:#fff;white-space:pre-wrap;word-break:break-word;line-height:1.9;max-height:55vh;overflow-y:auto;overflow-x:hidden;border:1px solid #e5e7eb;border-radius:14px;padding:15px;text-align:right}.replyEditor{width:100%;min-height:180px;max-height:50vh;resize:vertical;overflow-y:auto;color:#111;background:#fff;line-height:1.8}
+.adminHome{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}.adminTile{border:1px solid #e5e7eb;background:#fff;border-radius:18px;padding:20px;text-align:right;cursor:pointer;transition:.15s}.adminTile:hover{transform:translateY(-2px);box-shadow:0 8px 25px #0001}.adminPanel{display:none}.adminPanel.show{display:block}.adminBack{margin-bottom:12px}.floatingReply{position:fixed;left:18px;bottom:18px;z-index:220;display:none;border:0;border-radius:999px;padding:13px 18px;background:#111;color:#fff;font-weight:900;box-shadow:0 10px 30px #0003;cursor:pointer}.floatingReply.show{display:block}.subscribeRules{background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:14px;line-height:1.9;margin:12px 0}.telegramLogin{display:block;text-align:center;margin-top:14px;text-decoration:none;font-weight:900}.copyBank{white-space:nowrap}.adminBox{border:1px dashed #ccc;border-radius:14px;padding:12px;margin-top:12px}.wheelGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}.modalActions{display:flex;gap:10px;margin-top:14px}.bankBox{background:#f8fafc;border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:12px 0;line-height:2}.bankRow{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5e7eb;padding:5px 0}.bankRow:last-child{border-bottom:0}.bankLabel{color:#6b7280}.bankValue{font-weight:900;direction:ltr;text-align:left;word-break:break-all}.copyBank{margin-right:7px;border:1px solid #d9dee5;background:#fff;border-radius:8px;padding:4px 8px;cursor:pointer;font-weight:800}.copyBank:active{transform:scale(.97)}
+.customerLoginState{display:inline-flex;align-items:center;gap:7px;border:1px solid #e5e7eb;border-radius:999px;padding:7px 11px;background:#fff;font:inherit;font-weight:900;white-space:nowrap;cursor:default;box-shadow:0 4px 12px #0000000a}.customerLoginState.is-green{border-color:#bbf7d0;background:#f0fdf4;color:#15803d}.customerLoginState.is-red{border-color:#fecaca;background:#fef2f2;color:#b91c1c}.loginDot{width:9px;height:9px;border-radius:50%;display:inline-block}.is-green .loginDot{background:#16a34a;box-shadow:0 0 0 3px #dcfce7}.is-red .loginDot{background:#dc2626;box-shadow:0 0 0 3px #fee2e2}
+.noticeOverlay{position:fixed;inset:0;background:#0008;z-index:120;display:none;align-items:center;justify-content:center;padding:18px}.noticeOverlay.show{display:flex}.noticeBox{width:min(520px,100%);background:#fff;border-radius:22px;padding:24px;box-shadow:0 12px 40px #0004}.noticeBox h2{margin:0 0 10px}.noticeBox p{line-height:1.9;color:#444;margin:0}
+
+#authOverlay{position:fixed;inset:0;min-height:100dvh;height:100dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;align-items:flex-start;padding:0;background:#f5f6f8;display:flex;justify-content:center;}
+#authOverlay .authBox{width:100%;max-width:none;min-height:100dvh;margin:0;border-radius:0;border:0;padding:24px 16px 28px;box-shadow:none;}
+@media (max-width:700px){#authOverlay{padding:0;} #authOverlay .authBox{width:100%;margin:0;padding:20px 14px 26px;border-radius:0;}}
+
+.newsList{display:grid;gap:12px;margin-top:14px}.newsItem{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fff}.newsMeta{font-size:13px;color:#6b7280;margin-bottom:7px}.newsTitle{font-size:18px;font-weight:900;line-height:1.55;margin-bottom:7px}.newsDesc{line-height:1.75;color:#374151;white-space:pre-wrap}.newsFoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}.newsFoot a{font-weight:800;text-decoration:none}.sentiment{padding:4px 9px;border-radius:999px;background:#f1f2f4;font-size:12px;font-weight:800}.sentiment.pos{background:#dcfce7;color:#166534}.sentiment.neg{background:#fee2e2;color:#991b1b}
+
+/* Premium full-width interface — applied on top of the previous build */
+:root{--ink:#111827;--muted:#6b7280;--line:#e8ebef;--surface:#fff;--soft:#f6f8fb;--accent:#111827;--success:#16a34a}
+html{background:#f6f8fb}
+body{background:linear-gradient(180deg,#f8fafc 0%,#f3f5f8 100%);color:var(--ink)}
+.wrap{max-width:none;width:100%;padding:0 18px 42px}
+.top{width:100%;max-width:1440px;margin:0 auto;padding:14px 0 16px;background:transparent;border-bottom:1px solid rgba(17,24,39,.06)}
+.title{font-size:23px;letter-spacing:-.3px}.title .small{margin-top:2px}
+.menu{width:46px;height:46px;border-radius:15px;box-shadow:0 8px 24px #00000012;transition:.18s}.menu:active{transform:scale(.96)}
+.section{max-width:1440px;margin:0 auto}
+.card{background:transparent;border:0;border-radius:0;padding:18px 0;margin-bottom:8px;box-shadow:none}
+.card>h1,.card>h2{letter-spacing:-.3px}
+.card+.card{border-top:1px solid rgba(17,24,39,.06);padding-top:24px}
+.card .grid{background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:18px;box-shadow:0 8px 28px #11182708}
+.card>.actions,.card>.status,.card>.table-wrap{margin-left:0;margin-right:0}
+.status{border:1px solid var(--line);background:#fff;box-shadow:0 5px 18px #11182706}
+.table-wrap{border:1px solid var(--line);background:#fff;box-shadow:0 8px 28px #11182708;border-radius:18px}
+th{background:#f8fafc;color:#374151;font-weight:900}
+input,select,textarea{border:1px solid #dfe4ea;background:#fff;box-shadow:0 2px 8px #11182706;transition:.18s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#9ca3af;box-shadow:0 0 0 4px #1118270a}
+.btn{box-shadow:0 7px 18px #11182712;transition:.18s}.btn:active{transform:translateY(1px)}
+
+/* navigation */
+.drawer{backdrop-filter:blur(5px)}
+.drawerBox{width:min(360px,90vw);padding:22px 16px;background:rgba(255,255,255,.97);box-shadow:0 0 50px #0003}
+.drawerBox h3{font-size:21px;padding:0 8px 12px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.navBtn{display:flex;align-items:center;gap:12px;width:100%;padding:14px 15px;margin:6px 0;border:1px solid transparent;border-radius:16px;background:transparent;text-align:right;font-size:16px;font-weight:850;color:#20242a}
+.navBtn .navIcon{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:10px;background:#f1f4f7;font-size:17px;flex:0 0 32px}
+.navBtn.active{background:#111827;color:#fff;box-shadow:0 8px 22px #11182722}.navBtn.active .navIcon{background:#fff;color:#111}
+
+/* calculator */
+.pageHero{display:flex;align-items:center;gap:15px;padding:25px 0 22px;border-bottom:1px solid rgba(17,24,39,.06)}
+.heroIcon{width:58px;height:58px;border-radius:18px;background:#111827;color:#fff;display:flex;align-items:center;justify-content:center;font-size:28px;box-shadow:0 12px 28px #11182724;flex:0 0 58px}
+.eyebrow{font-size:12px;color:#6b7280;font-weight:900;margin-bottom:2px}.pageHero h1{margin:0 0 5px;font-size:28px}
+.calcLayout{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:22px 0 8px}.calcPanel{background:#fff;border:1px solid var(--line);border-radius:24px;padding:20px;box-shadow:0 10px 32px #1118270a}
+.panelTitle{display:flex;justify-content:space-between;align-items:center;font-weight:950;font-size:17px;margin-bottom:15px}.panelIcon{width:34px;height:34px;border-radius:11px;background:#f2f4f7;display:inline-flex;align-items:center;justify-content:center}
+.calcPanel .grid{gap:12px}.calcPanel input{font-size:18px;padding:15px}
+.calcResults{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:16px 0 28px}.resultCard{background:#fff;border:1px solid var(--line);border-radius:22px;padding:19px;display:flex;flex-direction:column;gap:7px;box-shadow:0 10px 30px #1118270a}.resultCard span{font-weight:800;color:#4b5563;font-size:14px}.resultCard strong{font-size:27px;letter-spacing:-.5px}.resultCard small{color:#8a919c}.resultCard.featured{border-color:#111827;background:linear-gradient(145deg,#111827,#1f2937);color:#fff;box-shadow:0 15px 35px #11182725}.resultCard.featured span,.resultCard.featured small{color:#d1d5db}
+
+/* admin */
+.adminHome{grid-template-columns:repeat(3,1fr)}
+.adminTile{background:#fff;border:1px solid var(--line);box-shadow:0 8px 28px #11182708}
+.adminBox{border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 8px 28px #11182708}
+.loadTestGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:14px}.loadTestCard{border:1px solid var(--line);border-radius:18px;background:#fff;padding:16px}.loadTestCard h3{margin:0 0 7px}.loadTestBadge{display:inline-block;border-radius:999px;padding:5px 9px;background:#f1f4f7;font-size:12px;font-weight:900}.loadTestControls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.loadTestResults{margin-top:16px}.loadMetricGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.loadMetric{border:1px solid var(--line);border-radius:14px;padding:12px;background:#f8fafc}.loadMetric b{display:block;font-size:20px;margin-top:4px;direction:ltr}.loadLog{margin-top:12px;max-height:260px;overflow:auto;white-space:pre-wrap;direction:ltr;text-align:left;background:#111827;color:#fff;border-radius:14px;padding:12px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}.loadWarn{background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:12px;line-height:1.8;margin-top:12px}@media(max-width:700px){.loadTestGrid,.loadTestControls{grid-template-columns:1fr}.loadMetricGrid{grid-template-columns:repeat(2,1fr)}}
+
+/* login */
+#authOverlay{background:radial-gradient(circle at 15% 10%,#eaf7ef 0,transparent 30%),radial-gradient(circle at 90% 90%,#eaf0ff 0,transparent 32%),#f5f7fa;padding:0}
+#authOverlay .authBox{position:relative;display:flex;flex-direction:column;justify-content:center;max-width:760px;min-height:100dvh;padding:42px 46px;background:rgba(255,255,255,.88);backdrop-filter:blur(16px);border-left:1px solid rgba(255,255,255,.9);border-right:1px solid rgba(255,255,255,.9);box-shadow:0 0 80px #11182712}
+#authOverlay .authHero{padding:28px;border-radius:26px;background:linear-gradient(135deg,#111827 0%,#243244 100%);border:0;box-shadow:0 18px 45px #11182722;color:#fff}
+#authOverlay .authLogo{background:#fff;color:#111827;width:62px;height:62px;border-radius:19px;box-shadow:none;font-size:30px}
+#authOverlay .authHero h1{font-size:31px;letter-spacing:-.7px}.authHero p{color:#d7dee7}
+#authOverlay .authSectionTitle{font-size:18px;margin-top:25px}
+#authOverlay .authField input{padding:15px;border-radius:14px;background:#fff}
+#authOverlay .authLoginBtn{padding:16px;border-radius:15px;font-size:18px}
+#authOverlay .authSubscribe{background:#fff;border-radius:18px}
+@media(max-width:800px){.wrap{padding:0 12px 32px}.calcLayout,.calcResults{grid-template-columns:1fr}.calcResults{gap:10px}.resultCard.featured{order:-1}.pageHero{padding-top:20px}.section{width:100%}.card{padding:14px 0}.card .grid{padding:14px;border-radius:18px}#authOverlay .authBox{padding:25px 16px 32px;max-width:none}.authHero h1{font-size:27px!important}}
+@media(min-width:801px){#authOverlay .authBox{border-radius:0}.card .table-wrap{width:100%}}
+
+/* Theme + legal/footer */
+body[data-theme="dark"]{background:#0f1115;color:#f3f4f6}body[data-theme="dark"] .top{background:#0f1115}body[data-theme="dark"] .card,body[data-theme="dark"] .adminTile,body[data-theme="dark"] .adminBox,body[data-theme="dark"] .calcPanel,body[data-theme="dark"] .resultCard{background:#171a21;color:#f3f4f6;border-color:#2b303a}body[data-theme="dark"] .sub,body[data-theme="dark"] .small,body[data-theme="dark"] .muted,body[data-theme="dark"] .note,body[data-theme="dark"] .favMeta{color:#aab1bd}body[data-theme="dark"] input,body[data-theme="dark"] select,body[data-theme="dark"] textarea{background:#11141a;color:#f3f4f6;border-color:#343b47}body[data-theme="dark"] th{background:#20242c;color:#fff}body[data-theme="dark"] td{border-color:#2b3038}body[data-theme="dark"] .drawerBox{background:#15181e}body[data-theme="dark"] .navBtn{background:#232832;color:#f3f4f6}body[data-theme="dark"] .calcbox,body[data-theme="dark"] .bankBox,body[data-theme="dark"] .subscribeRules{background:#1e232c;border-color:#343b47}body[data-theme="dark"] .testBox,body[data-theme="dark"] .replyEditor,body[data-theme="dark"] .replyModalText{background:#171a21;color:#f3f4f6;border-color:#343b47}body[data-theme="dark"] .testRow{border-color:#343b47}body[data-theme="dark"] .bankLabel{color:#aab1bd}body[data-theme="dark"] .copyBank{background:#20242c;color:#fff;border-color:#343b47}body[data-theme="dark"] .favBtn{background:#20242c;color:#fff;border-color:#343b47}
+.switchRow{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 0}.switch{position:relative;display:inline-block;width:54px;height:30px;flex:0 0 auto}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;inset:0;background:#9ca3af;border-radius:999px;cursor:pointer;transition:.2s}.slider:before{content:"";position:absolute;width:24px;height:24px;right:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 2px 6px #0003}.switch input:checked+.slider{background:#16a34a}.switch input:checked+.slider:before{transform:translateX(-24px)}
+.supportTabs{display:flex;gap:8px;margin-top:12px}.supportTab{border:1px solid #d9dee5;background:#f3f4f6;border-radius:12px;padding:10px 14px;font-weight:900;cursor:pointer}.supportTab.active{background:#111;color:#fff;border-color:#111}.siteFooter{display:flex;justify-content:center;gap:18px;flex-wrap:wrap;padding:18px 8px 30px;color:#6b7280;font-size:13px}.siteFooter button{border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit}.legalModal{position:fixed;inset:0;background:#0008;z-index:260;display:none;align-items:center;justify-content:center;padding:16px}.legalModal.show{display:flex}.legalBox{width:min(760px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:22px;padding:22px;box-shadow:0 20px 60px #0005;line-height:1.9}.legalHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.legalClose{border:0;background:#f1f2f4;border-radius:10px;width:40px;height:40px;font-size:22px;cursor:pointer}.termsAgree{display:flex;gap:9px;align-items:flex-start;margin-top:16px;padding:12px;background:#f8fafc;border-radius:12px}.termsAgree input{width:auto;margin-top:5px}.termsActions{display:flex;gap:8px;margin-top:14px}.authLegalFooter{margin-top:22px;border-top:1px solid #e5e7eb;padding-top:15px}.authLegalFooter .siteFooter{padding-bottom:0}
+body[data-theme="dark"] .siteFooter{color:#9ca3af}body[data-theme="dark"] .legalBox{background:#171a21;color:#f3f4f6}body[data-theme="dark"] .legalClose{background:#272c35;color:#fff}body[data-theme="dark"] .termsAgree{background:#20242c}
+</style>
+<style>
+/* Accessible dark-mode token layer */
+body[data-theme="dark"]{--ink:#f3f4f6;--muted:#aeb7c4;--line:#303744;--surface:#171b23;--soft:#202630;--accent:#f3f4f6;--success:#4ade80;background:#0d1015;color:var(--ink)}
+body[data-theme="dark"] html{background:#0d1015}
+body[data-theme="dark"] .grid,body[data-theme="dark"] .card .grid,body[data-theme="dark"] .table-wrap,body[data-theme="dark"] .status{background:var(--surface);border-color:var(--line);color:var(--ink)}
+body[data-theme="dark"] th{background:#232936;color:#f8fafc;border-color:#353d4a}body[data-theme="dark"] td{color:#e7ebf0;border-color:#303744}
+body[data-theme="dark"] input,body[data-theme="dark"] select,body[data-theme="dark"] textarea{background:#12161d;color:#f5f7fa;border-color:#394250}body[data-theme="dark"] input::placeholder,body[data-theme="dark"] textarea::placeholder{color:#7f8998}
+body[data-theme="dark"] label,body[data-theme="dark"] h1,body[data-theme="dark"] h2,body[data-theme="dark"] h3,body[data-theme="dark"] b,strong{color:inherit}
+body[data-theme="dark"] a{color:#93c5fd}body[data-theme="dark"] .btn.secondary{background:#252b35;color:#f3f4f6;border-color:#3b4452}body[data-theme="dark"] .btn.start{color:#fff}body[data-theme="dark"] .btn.stop{color:#fff}
+body[data-theme="dark"] .calcbox,body[data-theme="dark"] .bankBox,body[data-theme="dark"] .subscribeRules,body[data-theme="dark"] .loadMetric,body[data-theme="dark"] .loadTestCard{background:#202630;border-color:#343d4b;color:#edf1f5}
+body[data-theme="dark"] .siteFooter{border-color:#303744;color:#aeb7c4}body[data-theme="dark"] .supportTab{background:#242a34;color:#e8edf3;border-color:#3a4351}body[data-theme="dark"] .supportTab.active{background:#f3f4f6;color:#111827;border-color:#f3f4f6}
+body[data-theme="dark"] .authLegalFooter{border-color:#303744}body[data-theme="dark"] .authSubscribe{background:#171b23;color:#f3f4f6;border-color:#303744}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="top">
+    <button class="menu" id="menu">☰</button>
+    <div class="title">الباحث <div class="small">NASDAQ · NYSE · NYSE American</div></div>
+  </div>
+
+  <div id="sec-scanner" class="section active">
+    <div class="card"><h1>الباحث</h1><div class="sub">بحث في NASDAQ وNYSE وNYSE American عن الأسهم التي حققت تقسيمًا خلال آخر 100 يوم، مع بيانات الشورت عند توفرها.</div><div class="grid2" style="margin-top:12px"><div><label>البورصة</label><select id="splitExchange"><option value="ALL" selected>كل البورصات</option><option value="XNAS">NASDAQ</option><option value="XNYS">NYSE</option><option value="XASE">NYSE American</option></select></div></div></div>
+    <div class="card"><div class="grid">
+      <div><label>عدد أيام الـ Reverse Split</label><input id="days" type="number" value="" min="1" max="100" step="1" inputmode="numeric"></div>
+      <div><label>أعلى سعر حالي</label><input id="maxPrice" type="number" value="" step="0.01" min="0"></div>
+      <div><label>نسبة الهبوط من افتتاح يوم التقسيم</label><input id="drop" type="number" value="" step="0.1" min="0" max="99.9"></div>
+      <div><label>الحد الأعلى لـ RSI (14)</label><input id="rsiMax" type="number" value="" step="0.1" min="0" max="100"></div>
+      <div><label>الحد الأعلى للشورت (Available Shares)</label><input id="shortMax" type="number" value="" step="1" min="0"><div class="small">لن تظهر الأسهم التي تتجاوز هذا العدد. اتركه فارغًا لإلغاء الفلتر.</div></div>
+    </div><div class="actions" style="margin-top:12px"><button id="saveScannerSettings" class="btn start">💾 حفظ بيانات الفلتر</button><span id="scannerSettingsMsg" class="small"></span></div></div>
+    <div class="card"><div class="actions"><button id="start" class="btn start">▶ بحث</button><button id="pause" class="btn secondary" disabled>⏸ مؤقت</button><button id="resume" class="btn start" disabled>▶ استئناف</button><button id="stop" class="btn stop" disabled>■ إيقاف</button></div><div id="status" class="status">جاهز.</div><div id="searchUpdatedAt" class="small" style="margin-top:8px;text-align:center">آخر تحديث للبيانات: —</div></div>
+    <div class="card"><div class="grid"><div><label>الأسهم المفحوصة</label><div id="statScanned" class="calcbox big">0</div></div><div><label>الأسهم المطابقة</label><div id="statMatches" class="calcbox big">0</div></div><div><label>وقت آخر تحديث</label><div id="statUpdated" class="calcbox">—</div></div></div><div class="actions"><button id="exportCsv" class="btn secondary" disabled>⬇ تصدير CSV</button></div></div>
+    <div class="card"><h2>النتائج <span id="count" class="muted">0</span></h2><div class="table-wrap"><table><thead><tr>
+      <th>السهم</th><th>المفضلة</th><th>افتتاح التقسيم</th><th>الهدف</th><th>الحالي</th><th>الهبوط</th><th>تاريخ التقسيم</th><th>RSI</th><th>القاع</th><th>تاريخ القاع</th><th>IBKR Available Shares</th><th>IBKR Borrow Fee</th><th>Free Float</th>
+    </tr></thead><tbody id="results"></tbody></table></div></div>
+  </div>
+  <div id="sec-favorites" class="section">
+    <div class="card">
+      <h1>⭐ المفضلة</h1>
+      <div class="sub">أضف واحذف الأسهم كما تريد. وتظهر هنا أيضًا أسهم الشورت المتاحة وفائدة الاقتراض وتتحدث تلقائيًا.</div>
+      <div class="actions"><button id="refreshFavorites" class="btn secondary favRefresh">↻ تحديث الكل</button></div>
+      <div id="favoritesStatus" class="favMeta">—</div>
+    </div>
+    <div class="card favTable"><h2>الأسهم المحفوظة <span id="favoritesCount" class="muted">0</span></h2><div class="table-wrap"><table><thead><tr>
+      <th>السهم</th><th>السعر</th><th>الاختبار</th><th>التفاصيل</th><th>IBKR Available Shares</th><th>IBKR Borrow Fee</th><th>Free Float</th><th>التغير اليومي</th>
+    </tr></thead><tbody id="favoritesResults"></tbody></table></div><div id="favoritesEmpty" class="favEmpty">لا توجد أسهم في المفضلة حتى الآن.<br>من نتائج الباحث اضغط ⭐ بجانب السهم لإضافته.</div></div>
+  </div>
+  <div id="sec-average" class="section">
+    <div class="pageHero calculatorHero">
+      <div class="heroIcon">🧮</div>
+      <div><div class="eyebrow">حاسبة المتوسط</div><h1>الحاسبة</h1><div class="sub">أدخل بيانات مركزك الحالي والشراء الجديد، وستظهر لك النتيجة مباشرة بشكل واضح.</div></div>
+    </div>
+    <div class="calcLayout">
+      <div class="calcPanel">
+        <div class="panelTitle"><span>بيانات المركز الحالي</span><span class="panelIcon">📌</span></div>
+        <div class="grid">
+          <div><label>المتوسط الحالي</label><input id="oldPrice" type="number" value="" step="0.0001" placeholder="مثال: 6.00"></div>
+          <div><label>عدد الأسهم الحالي</label><input id="oldQty" type="number" value="" step="1" placeholder="مثال: 500"></div>
+        </div>
+      </div>
+      <div class="calcPanel">
+        <div class="panelTitle"><span>عملية الشراء الجديدة</span><span class="panelIcon">➕</span></div>
+        <div class="grid">
+          <div><label>سعر الشراء الجديد</label><input id="newPrice" type="number" value="" step="0.0001" placeholder="مثال: 3.10"></div>
+          <div><label>عدد الأسهم الجديدة</label><input id="newQty" type="number" value="" step="1" placeholder="مثال: 1000"></div>
+        </div>
+      </div>
+    </div>
+    <div class="calcResults">
+      <div class="resultCard"><span>إجمالي الأسهم</span><strong id="totalQty">—</strong><small>بعد الشراء الجديد</small></div>
+      <div class="resultCard"><span>إجمالي التكلفة</span><strong id="totalCost">—</strong><small>قيمة المركز بالكامل</small></div>
+      <div class="resultCard featured"><span>المتوسط الجديد</span><strong id="avgPrice">—</strong><small>هذا هو المتوسط بعد الإضافة</small></div>
+    </div>
+  </div>
+
+  <div id="sec-ipo" class="section">
+    <div class="card">
+      <h1>الاكتتابات القادمة (IPO)</h1>
+      <div class="sub">يعرض الاكتتابات/الـIPO المتوقعة خلال الأيام القادمة.</div>
+      <div class="grid">
+        <div><label>عدد الأيام القادمة</label><input id="ipoDays" type="number" value="7" min="1" max="30"></div>
+        <div><label>البورصة</label><select id="ipoExchange"><option value="ALL" selected>كل البورصات</option><option value="XNAS">NASDAQ</option><option value="XNYS">NYSE</option><option value="XASE">NYSE American</option></select></div>
+      </div>
+      <div class="actions"><button id="ipoRefresh" class="btn secondary">🔎 بحث في بيانات الاكتتابات</button></div>
+      <div id="ipoStatus" class="status">لم يتم التحديث اليوم.</div>
+      <div class="table-wrap" style="margin-top:12px"><table><thead><tr>
+        <th>الرمز</th><th>الشركة</th><th>تاريخ IPO</th><th>الأسهم</th><th>النطاق السعري</th><th>الحجم</th>
+      </tr></thead><tbody id="ipoResults"></tbody></table></div>
+    </div>
+  </div>
+
+  <div id="sec-support" class="section">
+  <div class="card">
+    <h1>💬 المقترحات والاستفسارات</h1>
+    <div class="sub">اختر نوع الرسالة واكتبها، وستصل مباشرة إلى المطور.</div>
+    <div class="grid" style="margin-top:12px">
+      <div><label>نوع الرسالة</label><select id="supportType"><option value="question">استفسار</option><option value="suggestion">اقتراح</option></select></div>
+      <div><label>عنوان مختصر (اختياري)</label><input id="supportSubject" placeholder="مثلاً: اقتراح إضافة فلتر جديد"></div>
+    </div>
+    <label>الرسالة</label><textarea id="supportMessage" rows="7" placeholder="اكتب استفسارك أو اقتراحك هنا..."></textarea>
+    <label>مرفق (اختياري)</label><input id="supportAttachment" type="file" accept="image/png,image/jpeg,application/pdf,.png,.jpg,.jpeg,.pdf">
+    <div class="small">المسموح: PNG / JPG / PDF — بحد أقصى 3 MB.</div>
+    <div class="actions"><button id="sendSupport" class="btn start">إرسال للمطور</button></div>
+    <div id="supportMsg" class="authMsg"></div>
+  </div>
+</div>
+
+<div id="sec-replies" class="section">
+  <div class="card">
+    <h1>📩 الردود</h1>
+    <div class="sub">هنا تظهر جميع ردود المطور على استفساراتك واقتراحاتك. لا تحتاج الاعتماد على التنبيه العائم فقط.</div>
+    <div class="actions"><button id="refreshReplies" class="btn secondary">↻ تحديث الردود</button></div>
+    <div id="repliesStatus" class="status">جاري التحميل...</div>
+    <div id="repliesList" style="margin-top:12px"></div>
+  </div>
+</div>
+
+<div id="sec-account" class="section">
+    <div class="card">
+      <h1>معلومات الحساب</h1>
+      <div class="grid" style="margin-top:12px">
+        <div><label>الحساب</label><div id="infoEmail" class="calcbox">—</div></div>
+        <div><label>الباقة</label><div id="infoPlan" class="calcbox">—</div></div>
+        <div><label>بداية الاشتراك</label><div id="infoStart" class="calcbox">—</div></div>
+        <div><label>نهاية الاشتراك</label><div id="infoEnd" class="calcbox">—</div></div>
+        <div><label>المتبقي</label><div id="infoRemaining" class="calcbox">—</div></div>
+      </div>
+      <div class="adminBox" style="margin-top:14px"><div class="switchRow"><div><b>الوضع الداكن</b><div class="small">تغيير مظهر الموقع على جهازك.</div></div><label class="switch"><input id="themeToggle" type="checkbox"><span class="slider"></span></label></div></div>
+      <div id="renewalBox" class="adminBox hidden" style="margin-top:12px">
+        <h2 style="font-size:18px">🔄 تجديد الاشتراك</h2>
+        <div class="sub">يمكنك طلب التجديد قبل انتهاء الاشتراك بـ7 أيام أو أقل.</div>
+        <div class="grid"><div><label>الباقة</label><select id="renewPlan"></select></div><div><label>المبلغ</label><input id="renewAmount" readonly></div><div><label>إثبات الحوالة</label><input id="renewProof" type="file" accept="image/*,.pdf"></div></div>
+        <button id="sendRenewal" class="btn start">إرسال طلب التجديد</button><div id="renewMsg" class="authMsg"></div>
+      </div>
+      <div class="actions"><button id="logout" class="btn secondary">تسجيل الخروج</button></div>
+    </div>
+  </div>
+
+<div id="sec-admin" class="section"><div class="card"><h1>🔐 لوحة المدير</h1><div id="adminHome"><div class="sub">اختر القسم الذي تريد إدارته:</div><div class="adminHome"><button type="button" class="adminTile" data-admin-panel="finance"><h2>💰 الأمور المالية</h2><div class="small">الأسعار، بيانات التحويل والتليجرام</div></button><button type="button" class="adminTile" data-admin-panel="support"><h2>💬 خدمة العميل</h2><div class="small">المقترحات والاستفسارات والرد على العملاء</div></button><button type="button" class="adminTile" data-admin-panel="customers"><h2>👥 قائمة العملاء</h2><div class="small">الحسابات، التفعيل، التمديد والأجهزة</div></button><button type="button" class="adminTile" data-admin-panel="site"><h2>⚙️ إعدادات الموقع</h2><div class="small">اختبار الضغط، الصيانة وحالة الموقع</div></button><button type="button" class="adminTile" data-admin-panel="stats"><h2>📊 إحصائيات الموقع</h2><div class="small">العملاء، الدخول، الطلبات، الإيرادات والكاش</div></button></div></div><div id="adminPanel-finance" class="adminPanel"><button type="button" class="btn secondary adminBack">← لوحة المدير</button>
+<div class="adminBox"><h2 style="font-size:18px">💰 إدارة الباقات</h2>
+<div class="small">أضف أو عدّل أو احذف أي باقة. لكل باقة اسم، مدة بالأيام وسعر بالدولار.</div>
+<div id="adminPlans" style="margin-top:12px"></div>
+<div class="actions"><button id="addPlan" class="btn secondary">＋ إضافة باقة</button><button id="savePlans" class="btn start">حفظ الباقات</button></div>
+<div id="priceMsg" class="small"></div></div>
+<div class="adminBox"><h2 style="font-size:18px">🏦 بيانات التحويل البنكي</h2><div class="grid"><div><label>اسم الحساب</label><input id="adminBankName"></div><div><label>البنك</label><input id="adminBankBank"></div><div><label>رقم الحساب</label><input id="adminBankAccount" inputmode="numeric"></div><div><label>رقم الآيبان</label><input id="adminBankIban"></div></div><div class="actions"><button id="saveBank" class="btn start">حفظ بيانات التحويل</button></div><div id="bankMsg" class="small"></div></div>
+<div class="adminBox"><h2 style="font-size:18px">📲 حساب التليجرام</h2><label>رابط حساب التليجرام</label><input id="adminTelegram" placeholder="https://t.me/username"><div class="small">سيظهر في تعليمات الاشتراك وأسفل تسجيل الدخول.</div><div class="actions"><button id="saveTelegram" class="btn start">حفظ حساب التليجرام</button></div><div id="telegramMsg" class="small"></div></div></div><div id="adminPanel-support" class="adminPanel"><button type="button" class="btn secondary adminBack">← لوحة المدير</button><div class="supportTabs"><button type="button" class="supportTab active" data-support-filter="pending">تنتظر الرد</button><button type="button" class="supportTab" data-support-filter="replied">تم الرد عليها</button></div><div class="actions"><button id="adminSupport" class="btn secondary">↻ تحديث خدمة العميل</button></div><div id="adminSupportOut" class="adminBox" style="overflow:auto">اضغط تحديث لعرض رسائل العملاء.</div></div><div id="adminPanel-customers" class="adminPanel"><button type="button" class="btn secondary adminBack">← لوحة المدير</button><div class="grid" style="margin-top:12px"><div><label>إيميل العميل</label><input id="adminEmail"></div><div><label>كلمة مرور العميل</label><input id="adminPassword" type="text"></div><div><label>الباقة</label><select id="adminPlan"></select></div><div><label>مدة الاشتراك بالأيام</label><input id="adminDays" type="number" value="30" min="1"></div></div><div class="actions"><button id="adminCreate" class="btn start">إنشاء / تفعيل</button><button id="adminRefresh" class="btn secondary">تحديث العملاء</button><button id="adminReq" class="btn secondary">طلبات الحوالات</button><button id="adminRenewReq" class="btn secondary">طلبات التجديد</button></div><div class="grid" style="margin-top:12px"><div><label>إجمالي المشتركين</label><div id="admTotal" class="calcbox big">0</div></div><div><label>المشتركون النشطون</label><div id="admActive" class="calcbox big">0</div></div><div><label>الاشتراكات المنتهية</label><div id="admExpired" class="calcbox big">0</div></div><div><label>إجمالي الإيرادات المسجلة</label><div id="admRevenue" class="calcbox big">0 ر.س</div></div></div><div id="adminOut" class="adminBox" style="overflow:auto">اضغط «تحديث العملاء» لعرض الحسابات.</div></div></div></div><div id="adminPanel-site" class="adminPanel"><button type="button" class="btn secondary adminBack">← لوحة المدير</button>
+<div class="adminBox"><h2 style="font-size:18px">⚙️ إعدادات الموقع</h2><div class="small">هذه الصفحة محمية بكلمة مرور المدير. لا يمكن فتح إعدادات الموقع أو تغيير حالته بدون كلمة مرور المدير.</div></div>
+<div class="adminBox"><h2 style="font-size:18px">🔄 التحديث التلقائي</h2><div class="switchRow"><div><b>تفعيل التحديث الدوري</b><div class="small">عند الإيقاف تتوقف الجدولة التلقائية للباحث والشورت والاكتتابات. أزرار التحديث اليدوي تبقى مستقلة.</div></div><label class="switch"><input id="autoUpdateToggle" type="checkbox"><span class="slider"></span></label></div><div class="actions"><button id="saveAutoUpdate" class="btn start">حفظ إعداد التحديث التلقائي</button></div><div id="autoUpdateMsg" class="small"></div></div>
+<div class="adminBox"><h2 style="font-size:18px">🚦 حالة الموقع</h2><div class="grid"><div><label>الحالة</label><select id="siteMode"><option value="normal">الموقع يعمل</option><option value="maintenance">الموقع تحت الصيانة</option><option value="development">الموقع تحت التطوير</option></select></div><div><label>رسالة العملاء</label><textarea id="siteModeMessage" rows="3" placeholder="اكتب هنا وضع الصيانة أو التطوير الذي تريد أن يظهر للعملاء."></textarea></div></div><div class="small">عند اختيار الصيانة أو التطوير، يتم منع العملاء من الدخول واستخدام الموقع، بينما يبقى حساب المدير قادرًا على الدخول لإجراء التعديلات.</div><div class="actions"><button id="saveSiteMode" class="btn start">حفظ حالة الموقع</button></div><div id="siteModeMsg" class="small"></div></div>
+<div class="adminBox"><h2 style="font-size:18px">🧪 اختبار الضغط</h2>
+<h1>🧪 اختبار الضغط</h1><div class="sub">هذه الصفحة تظهر للمدير فقط. الاختبارات الآمنة تقيس تحمل الموقع بدون إرسال طلبات الباحث إلى مزود بيانات الأسهم.</div><div class="loadWarn">⚠️ <b>مهم:</b> «100 مستخدم» هنا تعني 100 مستخدم افتراضي متزامن من نفس المتصفح/الجلسة. اختبار «محاكاة مستخدمين مستقلين» ينشئ جلسة مستقلة لكل مستخدم افتراضي ويشغل الحساب ← الباحث ← المفضلة داخل Function مباشرة، لتجاوز حماية Netlify Access. لا ينشئ حسابات عملاء حقيقية ولا يختبر أجهزة أو عناوين IP مختلفة. اختبارات الاكتتاب غير موجودة عمدًا لأنها تضرب API خارجي وقد تستهلك حصته.</div><div class="loadTestControls"><div><label>عدد العملاء/الطلبات المتزامنة</label><input id="loadUsers" type="number" value="100" min="1" max="500"></div><div><label>عدد الجولات</label><input id="loadRounds" type="number" value="1" min="1" max="10"></div></div><div class="actions" style="margin-top:14px"><button id="loadRunSelected" class="btn start">▶ تشغيل الاختبار المحدد</button><button id="loadRunAll" class="btn secondary">⚡ تشغيل كل الاختبارات الآمنة</button><button id="loadStop" class="btn stop" disabled>⏹ إيقاف</button></div><div class="loadTestGrid"><div class="loadTestCard"><h3>🔎 الباحث المخزن</h3><span class="loadTestBadge">موصى به — لا يضرب Massive</span><div class="small">يختبر وظيفة الباحث المخزن كما يفعل الباحث الرئيسي.</div><button class="btn secondary loadPick" data-test="scanner" style="margin-top:12px">اختيار</button></div><div class="loadTestCard"><h3>👤 الحساب</h3><span class="loadTestBadge">قراءة فقط</span><div class="small">يختبر جلسة الحساب الحالية عبر auth?action=me.</div><button class="btn secondary loadPick" data-test="me" style="margin-top:12px">اختيار</button></div><div class="loadTestCard"><h3>⭐ المفضلة</h3><span class="loadTestBadge">قراءة فقط</span><div class="small">يختبر قراءة المفضلة للعملاء.</div><button class="btn secondary loadPick" data-test="favorites" style="margin-top:12px">اختيار</button></div><div class="loadTestCard"><h3>❤️ صحة الموقع</h3><span class="loadTestBadge">قراءة/كتابة فحصية</span><div class="small">يختبر Functions وBlobs عبر health.</div><button class="btn secondary loadPick" data-test="health" style="margin-top:12px">اختيار</button></div><div class="loadTestCard"><h3>👥 محاكاة مستخدمين مستقلين</h3><span class="loadTestBadge">الأقرب للاختبار الحقيقي</span><div class="small">ينشئ جلسة مستقلة لكل مستخدم افتراضي ويشغل الحساب ← الباحث ← المفضلة داخل الخادم مباشرة، ثم يقيس الرحلة كاملة بدون المرور على صفحة Netlify Access.</div><button class="btn secondary loadPick" data-test="serverFull" style="margin-top:12px">اختيار</button></div></div><div id="loadSelected" class="status" style="margin-top:14px">الاختبار المحدد: الباحث المخزن</div><div class="loadTestResults"><div class="loadMetricGrid"><div class="loadMetric">الطلبات <b id="ltTotal">0</b></div><div class="loadMetric">نجح <b id="ltOk">0</b></div><div class="loadMetric">فشل <b id="ltFail">0</b></div><div class="loadMetric">متوسط الزمن <b id="ltAvg">—</b></div><div class="loadMetric">أسرع <b id="ltMin">—</b></div><div class="loadMetric">أبطأ <b id="ltMax">—</b></div><div class="loadMetric">429 <b id="lt429">0</b></div><div class="loadMetric">5xx <b id="lt5xx">0</b></div></div><div id="loadLog" class="loadLog">لا يوجد اختبار حتى الآن.</div></div></div></div><div id="adminPanel-stats" class="adminPanel"><button type="button" class="btn secondary adminBack">← لوحة المدير</button><div class="adminBox"><h2 style="font-size:18px">📊 إحصائيات الموقع</h2><div class="small">ملخص سريع عن العملاء، الدخول، الطلبات، الإيرادات، وحالة مستودع بيانات الباحث.</div><div class="actions"><button id="refreshSiteStats" class="btn secondary">تحديث الإحصائيات</button><button id="refreshSavedCache" class="btn start">🔄 تحديث الكاش الآن</button><button id="refreshBorrowNow" class="btn secondary">📉 تحديث الشورت الآن</button><button id="refreshMassiveCurrent" class="btn secondary">⚡ تحديث Massive الآن</button><button id="refreshDailySplits" class="btn secondary">📅 تحديث البيانات اليومية الآن</button></div><div id="savedCacheAdminMsg" class="small" style="margin-top:8px"></div><div id="borrowAdminMsg" class="small" style="margin-top:8px"></div><div id="dailySplitsAdminMsg" class="small" style="margin-top:8px"></div><div id="massiveCurrentAdminMsg" class="small" style="margin-top:8px"></div><div class="small" style="margin-top:6px">التحديث التلقائي الكامل يعمل كل ساعة خلال نافذة الإثنين–الجمعة 04:00–20:00 بتوقيت نيويورك. الشورت والفائدة لهما مسار مستقل داخل النافذة نفسها، وMassive الحالية والبيانات اليومية لهما أزرار مستقلة. أثناء أي بناء يبقى آخر كاش مكتمل متاحًا للعملاء، ولا يُنشر الكاش الجديد إلا بعد اكتمال التحقق.</div><div class="small" style="margin-top:6px">الجدولة التلقائية: تحديث كامل لكل بيانات الباحث مرة كل ساعة، من 04:00 إلى 20:00 بتوقيت نيويورك، من الإثنين إلى الجمعة فقط. السبت والأحد لا يوجد سحب.</div><div id="siteStatsOut" class="adminBox">اضغط «تحديث الإحصائيات» لعرض البيانات.</div></div></div>
+</div></div>
+
+  <div class="siteFooter"><button type="button" data-legal="privacy">سياسة الخصوصية</button><button type="button" data-legal="refund">سياسة الدفع والاسترجاع</button><button type="button" data-legal="support">الدعم</button><button type="button" data-legal="terms">الشروط والأحكام</button></div>
+</div>
+
+<div id="legalModal" class="legalModal"><div class="legalBox"><div class="legalHead"><h2 id="legalTitle">—</h2><button type="button" id="legalClose" class="legalClose">×</button></div><div id="legalContent"></div></div></div>
+
+<div id="termsModal" class="legalModal"><div class="legalBox"><div class="legalHead"><h2>الشروط والأحكام قبل الاشتراك</h2><button type="button" id="termsClose" class="legalClose">×</button></div><div id="termsContent"></div><label class="termsAgree"><input id="termsAgree" type="checkbox"><span>قرأت الشروط والأحكام وسياسة الدفع والاسترجاع وأوافق عليها قبل إرسال طلب الاشتراك.</span></label><div class="termsActions"><button type="button" id="termsContinue" class="btn start">استمرار إلى الاشتراك</button><button type="button" id="termsCancel" class="btn secondary">إلغاء</button></div></div></div>
+
+<!-- End of authenticated application shell. Keep login outside .wrap so it remains visible when logged out. -->
+<div id="authOverlay" class="authOverlay">
+  <div class="authBox">
+    <div class="authHero">
+      <div class="authLogo">📊⌕</div>
+      <h1>أهلًا بك في الباحث</h1>
+      <p>منصتك المتقدمة لفلترة ومتابعة الأسهم الأمريكية بدقة عالية، لمساعدتك في الوصول لأفضل الفرص المطابقة لشروطك بسرعة وسهولة.</p>
+    </div>
+
+    <div id="maintenanceBanner" class="maintenanceBanner hidden"><div class="maintenanceIcon">⏳</div><div><h2 id="maintenanceTitle">الموقع تحت الصيانة</h2><p id="maintenanceText">الموقع متوقف مؤقتًا، الرجاء المحاولة لاحقًا.</p></div></div>
+
+    <div class="authSectionTitle">تسجيل الدخول</div>
+    <div class="authField"><label>البريد الإلكتروني أو اسم المستخدم</label><input id="loginUser" autocomplete="username" placeholder="أدخل بيانات الدخول"></div>
+    <div class="authField"><label>كلمة المرور</label><input id="loginPass" type="password" autocomplete="current-password" placeholder="أدخل كلمة المرور"></div>
+    <button id="loginBtn" class="btn start authLoginBtn">دخول إلى الباحث</button>
+    <div id="loginMsg" class="authMsg"></div><a id="loginTelegram" class="telegramLogin" href="#" target="_blank" rel="noopener">📲 التواصل عبر التليجرام</a>
+
+    <div class="authBenefits">
+      <div class="authBenefit"><span>✓</span><span><b>تغطية واسعة للأسواق الأمريكية</b> — مع استبعاد أسهم الأسواق غير المدرجة.</span></div>
+      <div class="authBenefit"><span>✓</span><span><b>بحث منظم</b> — Reverse Split والسعر والهبوط وRSI والشورت في شاشة واحدة.</span></div>
+      <div class="authBenefit"><span>✓</span><span><b>نتائج واضحة</b> — تظهر أثناء الفحص ويمكن تصديرها CSV.</span></div>
+    </div>
+
+    <div class="authSubscribe"><button id="requestBtn" class="btn secondary" style="width:100%;margin-top:0">ليس لديك حساب؟ طلب اشتراك</button></div>
+
+    <div id="requestBox" class="hidden adminBox">
+      <h3 style="margin-top:0">بيانات التحويل</h3>
+      <div id="publicBankDetails" class="bankBox">جارٍ تحميل بيانات التحويل…</div>
+      <label>الاسم</label><input id="reqName">
+      <label>البريد/الجوال</label><input id="reqContact">
+      <label>الباقة</label><select id="reqPlan"></select>
+      <label>مبلغ التحويل</label><input id="reqAmount" type="number" value="59" readonly>
+      <label>إثبات الحوالة</label><input id="reqProof" type="file" accept="image/*,.pdf">
+      <button id="sendRequest" class="btn start" style="margin-top:10px">إرسال الطلب</button>
+      <div id="reqMsg" class="authMsg"></div>
+    </div>
+    <div class="authLegalFooter"><div class="siteFooter"><button type="button" data-legal="privacy">سياسة الخصوصية</button><button type="button" data-legal="refund">سياسة الدفع والاسترجاع</button><button type="button" data-legal="support">الدعم</button><button type="button" data-legal="terms">الشروط والأحكام</button></div></div>
+  </div>
+</div>
+
+<div id="researchNotice" class="noticeOverlay"><div class="noticeBox"><h2>تنبيه مهم</h2><p>الباحث مخصص لأغراض البحث والتحليل فقط، ونتائجه لا تُعد توصية بشراء أو بيع أي سهم، ولا تمثل نصيحة استثمارية.</p><div class="actions"><button id="noticeOk" class="btn start">فهمت</button></div></div></div>
+
+<div id="drawer" class="drawer"><div class="drawerBox">
+  <button class="close" id="close">×</button><h3>الأقسام</h3>
+  <button class="navBtn active" data-sec="scanner"><span class="navIcon">🔎</span><span>الباحث</span></button>
+  <button class="navBtn" data-sec="favorites"><span class="navIcon">⭐</span><span>المفضلة</span></button>
+  <button class="navBtn" data-sec="average"><span class="navIcon">🧮</span><span>الحاسبة</span></button>
+  <button class="navBtn" data-sec="ipo"><span class="navIcon">🚀</span><span>أسهم الاكتتاب</span></button>
+  <button class="navBtn" data-sec="support"><span class="navIcon">💬</span><span>المقترحات والاستفسارات</span></button>
+  <button class="navBtn" data-sec="replies"><span class="navIcon">📩</span><span>الردود</span></button>
+  <button class="navBtn" data-sec="account"><span class="navIcon">👤</span><span>معلومات الحساب</span></button>
+  <button class="navBtn hidden" id="adminNav" data-sec="admin"><span class="navIcon">🔐</span><span>لوحة المدير</span></button>
+</div></div>
+
+<div id="extendModal" class="testModal" onclick="if(event.target===this)closeExtendModal()"><div class="testBox"><div class="testHead"><h2>تمديد الاشتراك</h2><button id="extendClose" class="testClose">×</button></div><div class="sub">اختر تاريخ انتهاء الاشتراك الجديد من قوائم السنة والشهر واليوم.</div><div class="wheelGrid" style="margin-top:14px"><div><label>السنة</label><select id="extendYear"></select></div><div><label>الشهر</label><select id="extendMonth"></select></div><div><label>اليوم</label><select id="extendDay"></select></div></div><div class="modalActions"><button id="extendSave" class="btn start">حفظ التاريخ</button><button id="extendCancel" class="btn secondary">إلغاء</button></div><div id="extendMsg" class="authMsg"></div></div></div>
+<div id="proofModal" class="testModal" onclick="if(event.target===this)this.classList.remove('show')"><div class="testBox"><div class="testHead"><h2>عرض المرفق</h2><button id="proofClose" class="testClose">×</button></div><div id="proofViewer" style="min-height:200px;text-align:center"></div></div></div>
+<div id="testModal" class="testModal" onclick="if(event.target===this)this.classList.remove('show')"><div class="testBox"><div class="testHead"><h2 id="testTitle">اختبار السهم</h2><button id="testClose" class="testClose">×</button></div><div id="testRows" class="testRows"></div><div id="testNote" class="testNote"></div></div></div>
+<div id="detailsModal" class="testModal" onclick="if(event.target===this)this.classList.remove('show')"><div class="testBox"><div class="testHead"><h2 id="detailsTitle">تفاصيل السهم</h2><button id="detailsClose" class="testClose">×</button></div><div id="detailsRows" class="testRows"></div><div id="detailsNote" class="testNote"></div></div></div>
+
+<button id="floatingReply" class="floatingReply">💬 لديك رد من المطور</button>
+<div id="replyModal" class="testModal" onclick="if(event.target===this)this.classList.remove('show')"><div class="testBox"><div class="testHead"><h2>رد المطور</h2><button id="replyClose" class="testClose">×</button></div><div id="replyModalText" class="replyModalText"></div></div></div>
+<div id="adminReplyModal" class="testModal" onclick="if(event.target===this)this.classList.remove('show')"><div class="testBox"><div class="testHead"><h2>الرد على العميل</h2><button id="adminReplyClose" class="testClose">×</button></div><label>اكتب الرد</label><textarea id="adminReplyText" class="replyEditor" placeholder="اكتب ردك للعميل هنا..."></textarea><div class="modalActions"><button id="adminReplySave" class="btn start">حفظ الرد</button><button id="adminReplyCancel" class="btn secondary">إلغاء</button></div><div id="adminReplyMsg" class="authMsg"></div></div></div>
+<script src="/site.js" defer></script>
+
+</body>
+</html>
+

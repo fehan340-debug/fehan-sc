@@ -1,0 +1,10 @@
+{
+  "name": "nasdaq-scanner-saas",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^9.1.0",
+    "@netlify/async-workloads": "0.0.106",
+    "cheerio": "^1.1.2"
+  }
+}

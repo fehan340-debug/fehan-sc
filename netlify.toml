@@ -1,0 +1,14 @@
+[build]
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Automatic hourly refresh starts at minute 40. Borrow refresh runs one ticker per minute during the configured window.
+
+# Netlify cron is UTC. The scheduled functions cover both DST/standard-time UTC windows,
+# while the workers enforce the exact America/New_York Mon-Fri 04:00-20:00 business window.
