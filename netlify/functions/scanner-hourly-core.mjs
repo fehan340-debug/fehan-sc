@@ -3,9 +3,23 @@ import { getDataStore } from '../../lib.js';
 import { getUniverse } from './scanner-universe-core.mjs';
 import { readBorrowCache } from './scanner-borrow-core.mjs';
 import { writeDataBundle, readDataBundle } from './scanner-data-bundle.mjs';
-import { readIpoCache } from './scanner-ipo-core.mjs';
+import { refreshIpoCache, readIpoCache } from './scanner-ipo-core.mjs';
 
 const MASSIVE='https://api.massive.com';
+const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||'').trim().replace(/\/$/,'');
+const SUPABASE_KEY=()=>String(process.env.SUPABASE_KEY||'').trim();
+const SUPABASE_TABLE=()=>String(process.env.SUPABASE_TABLE||'scanner_worker_store').trim();
+async function mirrorCentralSnapshot(payload){
+  const url=SUPABASE_URL(), key=SUPABASE_KEY(), table=SUPABASE_TABLE();
+  if(!url||!key){console.warn('[central-supabase] SUPABASE_URL/SUPABASE_KEY not configured; Netlify central mirror skipped.');return false;}
+  const response=await fetch(`${url}/rest/v1/${encodeURIComponent(table)}`,{
+    method:'POST',
+    headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},
+    body:JSON.stringify({key:'scanner-central-cache-v1',value:payload})
+  });
+  if(!response.ok){const body=await response.text();throw new Error(`Supabase central mirror HTTP ${response.status}: ${body.slice(0,500)}`);}
+  return true;
+}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const key=()=>String(process.env.MASSIVE_API_KEY||'').trim();
 const iso=d=>d.toISOString().slice(0,10);
@@ -180,10 +194,23 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     finalRows=validRows;
     const publishedAt=new Date().toISOString();
     const versionKey=`scanner-cache-data-v2:${jobId}`;
-    const ipoCache=await readIpoCache();
+    let ipoCache=null;
+    try{
+      ipoCache=await refreshIpoCache();
+    }catch(e){
+      console.warn('[hourly-refresh] fresh IPO refresh failed; retaining last valid IPO cache',String(e?.message||e));
+      ipoCache=await readIpoCache();
+    }
     const payload={version:8,ready:true,building:false,updatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-direct-html-fresh',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
     await store.setJSON(versionKey,payload);
     await writeDataBundle(payload);
+    try{
+      await mirrorCentralSnapshot(payload);
+      await store.setJSON('scanner-central-status-v1',{state:'ready',updatedAt:publishedAt,records:finalRows.length,ipoRecords:Array.isArray(payload.ipos)?payload.ipos.length:0,storage:'supabase'});
+    }catch(e){
+      console.error('[central-supabase] mirror failed; Netlify serving cache remains published',String(e?.message||e));
+      await store.setJSON('scanner-central-status-v1',{state:'mirror-error',updatedAt:publishedAt,error:String(e?.message||e),records:finalRows.length,storage:'supabase'}).catch(()=>{});
+    }
     await store.setJSON('scanner-cache-pointer-v2',{version:2,key:versionKey,updatedAt:publishedAt,records:finalRows.length});
     await store.setJSON('scanner-cache-v1',payload);
     await store.setJSON('scanner-cache-status',{state:'ready',jobId,startedAt:null,finishedAt:publishedAt,error:null,records:finalRows.length,tickers:entries.length,expectedRows:payload.expectedRows,missingRows:payload.missingRows,missing:payload.missing,successRate,requiredRows});

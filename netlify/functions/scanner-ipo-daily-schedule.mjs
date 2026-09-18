@@ -4,4 +4,4 @@ export default async function(){const settings=await getSiteSettings();if(settin
   try{await refreshIpoCache();return new Response('ok',{status:200});}
   catch(e){console.error('daily IPO refresh failed',e);return new Response(String(e?.message||e),{status:500});}
 }
-export const config={schedule:'15 10 * * *'};
+export const config={schedule:'15 10 * * 1-5'};
