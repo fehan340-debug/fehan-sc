@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { store } from './store.mjs';
+import { store, getNetlifyStoreSafe } from './store.mjs';
 import { borrowFromScraperAPI } from '../netlify/functions/chartexchange.mjs';
 
 const JOB_KEY='scanner-borrow-job-v4';
@@ -10,14 +10,28 @@ const ENGINE_VERSION=7;
 const finite=n=>Number.isFinite(Number(n))?Number(n):null;
 
 async function getJson(key){return await store.get(key,{type:'json',consistency:'strong'}).catch(()=>null);}
+async function getJsonWithNetlifyFallback(key){
+  const supabaseValue=await getJson(key);
+  if(supabaseValue!=null)return supabaseValue;
+  try{
+    const netlify=getNetlifyStoreSafe();
+    if(!netlify)return null;
+    const value=await netlify.get(key,{type:'json',consistency:'strong'});
+    if(value!=null)await store.setJSON(key,value).catch(()=>{});
+    return value??null;
+  }catch(error){
+    console.warn('[external-short-worker] Netlify fallback read failed',{key,error:String(error?.message||error)});
+    return null;
+  }
+}
 async function setJson(key,value){await store.setJSON(key,value);}
 
 function supportedExchange(value){return ['XNAS','XNYS','XASE'].includes(String(value||'').toUpperCase());}
 
 async function instantPublish(ticker,b,stamp){
-  const pointer=await getJson('scanner-cache-pointer-v2');
+  const pointer=await getJsonWithNetlifyFallback('scanner-cache-pointer-v2');
   const key=pointer?.key||'scanner-cache-v1';
-  const base=await getJson(key);
+  const base=await getJsonWithNetlifyFallback(key);
   if(!base?.ready||!Array.isArray(base.records))return;
   const rows=base.records.map(row=>{
     if(String(row.ticker||'').toUpperCase()!==ticker)return row;
@@ -55,10 +69,10 @@ async function finish(job,stamp){
 }
 
 async function createJob(trigger){
-  const universe=await getJson('scanner-universe-v2');
+  const universe=await getJsonWithNetlifyFallback('scanner-universe-v2');
   const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
   if(!tickers.length)throw new Error('لم يتم العثور على قائمة الأسهم المعتمدة للشورت في scanner-universe-v2.');
-  const previous=await getJson('scanner-borrow-v2');
+  const previous=await getJsonWithNetlifyFallback('scanner-borrow-v2');
   const records=previous?.records&&typeof previous.records==='object'?{...previous.records}:{};
   const exchangeByTicker=Object.fromEntries(tickers.map(t=>[t,String(universe?.references?.[t]?.primary_exchange||'').toUpperCase()]));
   const now=new Date().toISOString();

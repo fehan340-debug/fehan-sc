@@ -9,7 +9,7 @@ const supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/$/,
 const supabaseKey = String(process.env.SUPABASE_KEY || '').trim();
 const table = String(process.env.SUPABASE_TABLE || 'scanner_worker_store').trim();
 
-function getNetlifyStoreSafe() {
+export function getNetlifyStoreSafe() {
   try {
     const siteID = String(process.env.NETLIFY_SITE_ID || '').trim();
     const token = String(process.env.NETLIFY_AUTH_TOKEN || '').trim();
