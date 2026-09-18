@@ -95,8 +95,19 @@ async function processTicker(job,ticker){
   }
   job.cursor++;
   job.lastActivityAt=stamp;
+  // Durable per-ticker checkpoint in Supabase: one row/key per symbol.
+  // This means a completed ticker is saved immediately and does not depend on
+  // the 200-ticker batch finishing successfully.
+  await setJson(`scanner-short-record:${ticker}`, {
+    ticker,
+    exchange,
+    ...job.records[ticker],
+    jobId: job.jobId,
+    index: job.cursor,
+    total: job.total,
+    savedAt: stamp
+  });
   await setJson(JOB_KEY,job);
-  await setJson('scanner-borrow-v2',{version:5,ready:true,updatedAt:stamp,records:job.records,universeUpdatedAt:job.universeUpdatedAt||null,total:job.total,liveCount:job.tickers.filter(t=>job.records[t]?.state==='ready').length,missingCount:Math.max(0,job.total-job.tickers.filter(t=>job.records[t]?.state==='ready').length),attempts:job.attempted});
   await instantPublish(ticker,{...job.records[ticker],updatedAt:stamp},stamp);
   const doneUnique=job.tickers.filter(t=>job.records[t]?.state==='ready').length;
   await setJson(STATUS_KEY,{state:job.cursor>=job.total?'ready':'building',jobId:job.jobId,startedAt:job.startedAt,finishedAt:job.cursor>=job.total?stamp:null,error:null,total:job.total,done:job.cursor,attempts:job.attempted,successful:doneUnique,failed:job.failed,records:Object.keys(job.records).length,phase:job.cursor>=job.total?'complete':'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions',currentTicker:ticker,currentIndex:job.cursor,remaining:Math.max(0,job.total-job.cursor),lastTickerAt:stamp});
