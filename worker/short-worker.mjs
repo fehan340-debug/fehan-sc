@@ -115,7 +115,12 @@ async function processTicker(job,ticker){
 }
 
 async function main(){
-  const trigger=await getJson(TRIGGER_KEY);
+  let trigger=await getJson(TRIGGER_KEY);
+  // A manual GitHub Actions run is also allowed to start a scrape directly.
+  // The website/cron path still uses the durable Supabase trigger flag.
+  if(trigger?.trigger!==true && String(process.env.FORCE_SHORT_RUN||'').toLowerCase()==='true') {
+    trigger={trigger:true,source:'manual-github-actions',requestedAt:new Date().toISOString()};
+  }
   if(trigger?.trigger!==true){console.log('No pending short trigger.');return;}
   let job=await getJson(JOB_KEY);
   const stale=job?.active&&job.lastActivityAt&&Date.now()-new Date(job.lastActivityAt).getTime()>5*60*1000;
