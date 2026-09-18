@@ -48,3 +48,14 @@ No Netlify Function performs the 209-ticker scraping loop anymore.
 ## Customer/API isolation
 
 The customer-facing `chartexchange?action=borrow|float` actions are cache-only. They no longer invoke ScraperAPI/ChartExchange. The actual scraper export is used only by `worker/short-worker.mjs`.
+
+
+## Supabase storage for GitHub Actions worker
+The external worker runs outside Netlify and uses Supabase REST directly through `worker/store.mjs`. Create the table with `SUPABASE-WORKER-MIGRATION.sql`, then add these GitHub Actions secrets:
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
+- `SCRAPERAPI_KEY`
+- `NETLIFY_SITE_ID`
+- `NETLIFY_AUTH_TOKEN`
+
+`SUPABASE_TABLE` defaults to `scanner_worker_store`. The Netlify Blobs adapter is guarded and is not used by the external worker.

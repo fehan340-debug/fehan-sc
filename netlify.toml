@@ -8,7 +8,7 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
-# Automatic hourly refresh starts at minute 40. Borrow refresh runs one ticker per minute during the configured window.
+# Automatic scanner refresh is checked every hour at minute 40 Mon-Fri; the code enforces America/New_York 04:00-20:00 (16 eligible hourly runs/day). Borrow refresh starts at minute 50.
 
 # Netlify cron is UTC. The scheduled functions cover both DST/standard-time UTC windows,
 # while the workers enforce the exact America/New_York Mon-Fri 04:00-20:00 business window.

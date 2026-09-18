@@ -22,3 +22,7 @@ The authoritative Massive universe is now explicitly restricted to the three req
 ## Structural short-worker change
 
 The short scraper is now externalized to GitHub Actions. Netlify Functions only create the pending trigger and dispatch `.github/workflows/short-worker.yml`; the scraper itself runs in `worker/short-worker.mjs` outside Netlify. Each ticker has a 4-second timeout and progress/results are persisted to Netlify Blobs after every ticker.
+
+
+## Hourly central snapshot
+The hourly scanner publishes the complete scanner snapshot (Massive split/technical/current data + Short/borrow/free-float + IPO records) to Supabase under key `scanner-central-cache-v1` after publishing the compressed Netlify serving bundle. Set `SUPABASE_URL` and a server-side `SUPABASE_KEY` in Netlify as well as GitHub Actions. The automatic schedule is Mon-Fri, with an America/New_York guard for 04:00-20:00; minute 40 runs the main refresh and minute 50 triggers the external short worker.
