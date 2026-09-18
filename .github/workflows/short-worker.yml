@@ -39,4 +39,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_TABLE: scanner_worker_store
+          FORCE_SHORT_RUN: true
         run: node worker/short-worker.mjs
