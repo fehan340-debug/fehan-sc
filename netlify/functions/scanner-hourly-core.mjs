@@ -6,7 +6,7 @@ import { writeDataBundle, readDataBundle } from './scanner-data-bundle.mjs';
 import { refreshIpoCache, readIpoCache } from './scanner-ipo-core.mjs';
 
 const MASSIVE='https://api.massive.com';
-const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||'').trim().replace(/\/$/,'');
+const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||'').trim().replace(/\/+$/,'').replace(/\/rest\/v1$/i,'');
 const SUPABASE_KEY=()=>String(process.env.SUPABASE_KEY||'').trim();
 const SUPABASE_TABLE=()=>String(process.env.SUPABASE_TABLE||'scanner_worker_store').trim();
 async function mirrorCentralSnapshot(payload){
