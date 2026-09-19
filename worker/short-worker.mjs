@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { store, getNetlifyStoreSafe } from './store.mjs';
+import { store } from './store.mjs';
 import { borrowFromScraperAPI } from '../netlify/functions/chartexchange.mjs';
 
 const JOB_KEY='scanner-borrow-job-v4';
@@ -9,29 +9,14 @@ const TIMEOUT_MS=10000;
 const ENGINE_VERSION=7;
 const finite=n=>Number.isFinite(Number(n))?Number(n):null;
 
-async function getJson(key){return await store.get(key,{type:'json',consistency:'strong'}).catch(()=>null);}
-async function getJsonWithNetlifyFallback(key){
-  const supabaseValue=await getJson(key);
-  if(supabaseValue!=null)return supabaseValue;
-  try{
-    const netlify=getNetlifyStoreSafe();
-    if(!netlify)return null;
-    const value=await netlify.get(key,{type:'json',consistency:'strong'});
-    if(value!=null)await store.setJSON(key,value).catch(()=>{});
-    return value??null;
-  }catch(error){
-    console.warn('[external-short-worker] Netlify fallback read failed',{key,error:String(error?.message||error)});
-    return null;
-  }
-}
+async function getJson(key){return await store.get(key);}
 async function setJson(key,value){await store.setJSON(key,value);}
 
 function supportedExchange(value){return ['XNAS','XNYS','XASE'].includes(String(value||'').toUpperCase());}
 
 async function instantPublish(ticker,b,stamp){
-  const pointer=await getJsonWithNetlifyFallback('scanner-cache-pointer-v2');
-  const key=pointer?.key||'scanner-cache-v1';
-  const base=await getJsonWithNetlifyFallback(key);
+  const key='scanner-cache-v1';
+  const base=await getJson(key);
   if(!base?.ready||!Array.isArray(base.records))return;
   const rows=base.records.map(row=>{
     if(String(row.ticker||'').toUpperCase()!==ticker)return row;
@@ -51,8 +36,8 @@ async function instantPublish(ticker,b,stamp){
   });
   const payload={...base,records:rows,borrowUpdatedAt:stamp,updatedAt:stamp};
   await setJson(key,payload);
-  await setJson('scanner-cache-v1',payload);
-  await setJson('scanner-cache-pointer-v2',{...(pointer||{}),key,updatedAt:stamp,records:rows.length});
+  await setJson('scanner-central-cache-v1',payload);
+  await setJson('scanner-cache-pointer-v2',{version:2,key,updatedAt:stamp,records:rows.length});
 }
 
 async function finish(job,stamp){
@@ -68,6 +53,8 @@ async function finish(job,stamp){
   await setJson('scanner-borrow-pointer-v2',{version:5,key:versionedKey,updatedAt:stamp,total:job.total,liveCount:doneUnique,missingCount:Math.max(0,job.total-doneUnique)});
   await setJson('scanner-borrow-v1',payload);
   await setJson('scanner-borrow-v2',payload);
+  const central=await getJson('scanner-cache-v1');
+  if(central?.ready&&Array.isArray(central.records)) await setJson('scanner-central-cache-v1',central);
   await setJson('trigger_short_update',{trigger:false,status:'complete',clearedAt:stamp,source:job.triggerSource||'external-worker',jobId:job.jobId});
   await setJson(STATUS_KEY,{state:'ready',jobId:job.jobId,startedAt:job.startedAt,finishedAt:stamp,error:null,total:job.total,done:job.total,attempts:job.attempted,successful:doneUnique,failed:Math.max(0,job.total-doneUnique),records:Object.keys(job.records).length,phase:'complete',timeoutMs:TIMEOUT_MS,publishedAt:stamp,mode:'external-github-actions',worker:'github-actions'});
   await store.delete(JOB_KEY).catch(()=>{});
@@ -77,11 +64,11 @@ async function createJob(trigger){
   // The approved short universe is normally produced by the Netlify scanner.
   // Prefer scanner-universe-v2, then fall back to the dedicated short-universe
   // copy if an older deployment has not populated v2 yet.
-  const universe=await getJsonWithNetlifyFallback('scanner-universe-v2')
-    || await getJsonWithNetlifyFallback('scanner-borrow-universe-v1');
+  const universe=await getJson('scanner-universe-v2')
+    || await getJson('scanner-borrow-universe-v1');
   const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
   if(!tickers.length)throw new Error('لم يتم العثور على قائمة الأسهم المعتمدة للشورت في scanner-universe-v2.');
-  const previous=await getJsonWithNetlifyFallback('scanner-borrow-v2');
+  const previous=await getJson('scanner-borrow-v2');
   const records=previous?.records&&typeof previous.records==='object'?{...previous.records}:{};
   const exchangeByTicker=Object.fromEntries(tickers.map(t=>[t,String(universe?.references?.[t]?.primary_exchange||'').toUpperCase()]));
   const now=new Date().toISOString();
@@ -138,11 +125,14 @@ async function processTicker(job,ticker){
 
 async function autoUpdatesEnabled(){
   try{
-    const netlify=getNetlifyStoreSafe();
-    if(!netlify)return true;
-    const settings=await netlify.get('site-settings',{type:'json',consistency:'strong'});
+    // Settings are stored in Supabase under the same key/value table.
+    // Missing settings keep the worker enabled by default.
+    const settings=await getJson('site-settings');
     return settings?.auto_update_enabled!==false && settings?.autoUpdateEnabled!==false;
-  }catch{return true;}
+  }catch(error){
+    console.warn('[external-short-worker] Supabase site-settings read failed; keeping worker enabled.', String(error?.message||error));
+    return true;
+  }
 }
 
 async function main(){

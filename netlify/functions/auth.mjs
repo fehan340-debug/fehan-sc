@@ -6,7 +6,7 @@ export default async function(request){
     if(action==="pricing"){ return json({ok:true,pricing:await getSiteSettings()}); }
     if(action==="health"){
       const users=await getUsers(); const email=(process.env.ADMIN_EMAIL||"").trim().toLowerCase();
-      return json({ok:true,environment:Boolean(email&&process.env.ADMIN_PASSWORD),adminCreated:Boolean(email&&users[email]),blobs:true});
+      return json({ok:true,environment:Boolean(email&&process.env.ADMIN_PASSWORD),adminCreated:Boolean(email&&users[email]),supabase:true});
     }
     if(action==="scanner-settings") {
       const c=await currentUser(request);

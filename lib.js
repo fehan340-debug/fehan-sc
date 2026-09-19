@@ -1,7 +1,63 @@
-import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 
-export function getDataStore(){ return getStore("nasdaq-scanner-data"); }
+// Supabase is the single persistent data store for the application.
+// Netlify Blobs is intentionally not used anywhere in the project.
+const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||"").trim().replace(/\/$/,"");
+const SUPABASE_KEY=()=>String(process.env.SUPABASE_KEY||"").trim();
+const SUPABASE_TABLE=()=>String(process.env.SUPABASE_TABLE||"scanner_worker_store").trim();
+
+function requireSupabase(){
+  const url=SUPABASE_URL(), key=SUPABASE_KEY(), table=SUPABASE_TABLE();
+  if(!url||!key) throw new Error("SUPABASE_URL و SUPABASE_KEY غير مهيئين في Netlify.");
+  if(!table) throw new Error("SUPABASE_TABLE غير صالح.");
+  return {url,key,table};
+}
+function enc(v){return encodeURIComponent(String(v));}
+async function supabaseRequest(path,options={}){
+  const {url,key}=requireSupabase();
+  const r=await fetch(`${url}/rest/v1/${path}`,{
+    ...options,
+    headers:{apikey:key,Authorization:`Bearer ${key}`,"Content-Type":"application/json",...(options.headers||{})}
+  });
+  const body=await r.text();
+  if(!r.ok) throw new Error(`Supabase HTTP ${r.status}: ${body.slice(0,1000)}`);
+  if(!body) return null;
+  try{return JSON.parse(body);}catch{return body;}
+}
+
+export function getDataStore(){
+  const {table}=requireSupabase();
+  const path=encodeURIComponent(table);
+  return {
+    async get(key,options={}){
+      const rows=await supabaseRequest(`${path}?select=value&key=eq.${enc(key)}&limit=1`);
+      const raw=rows?.[0]?.value;
+      if(raw==null)return null;
+      if(options.type==="arrayBuffer"){
+        if(raw?.__scanner_binary_base64){
+          const b=Buffer.from(String(raw.__scanner_binary_base64),"base64");
+          return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength);
+        }
+        return null;
+      }
+      if(options.type==="text") return typeof raw==="string"?raw:JSON.stringify(raw);
+      return raw;
+    },
+    async setJSON(key,value){
+      await supabaseRequest(path,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({key:String(key),value})});
+      return value;
+    },
+    async set(key,value){
+      let stored=value;
+      if(value instanceof ArrayBuffer) stored={__scanner_binary_base64:Buffer.from(value).toString("base64")};
+      else if(ArrayBuffer.isView(value)) stored={__scanner_binary_base64:Buffer.from(value.buffer,value.byteOffset,value.byteLength).toString("base64")};
+      else if(Buffer.isBuffer(value)) stored={__scanner_binary_base64:value.toString("base64")};
+      await supabaseRequest(path,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({key:String(key),value:stored})});
+      return value;
+    },
+    async delete(key){await supabaseRequest(`${path}?key=eq.${enc(key)}`,{method:"DELETE"});}
+  };
+}
 
 export function json(data,status=200,extra={}) {
   const headers = {"content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...extra};

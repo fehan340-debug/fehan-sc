@@ -21,7 +21,7 @@ The authoritative Massive universe is now explicitly restricted to the three req
 
 ## Structural short-worker change
 
-The short scraper is now externalized to GitHub Actions. Netlify Functions only create the pending trigger and dispatch `.github/workflows/short-worker.yml`; the scraper itself runs in `worker/short-worker.mjs` outside Netlify. Each ticker has a 4-second timeout and progress/results are persisted to Netlify Blobs after every ticker.
+The short scraper is now externalized to GitHub Actions. Netlify Functions only create the pending trigger and dispatch `.github/workflows/short-worker.yml`; the scraper itself runs in `worker/short-worker.mjs` outside Netlify. Each ticker has a 4-second timeout and progress/results are persisted to Supabase after every ticker.
 
 
 ## Hourly central snapshot

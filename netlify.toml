@@ -12,3 +12,5 @@
 
 # Netlify cron is UTC. The scheduled functions cover both DST/standard-time UTC windows,
 # while the workers enforce the exact America/New_York Mon-Fri 04:00-20:00 business window.
+
+# scanner-cache function emits Edge/CDN SWR headers: max-age=300, s-maxage=300, stale-while-revalidate=300.

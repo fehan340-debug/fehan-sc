@@ -40,10 +40,9 @@ export async function refreshUniverse(){
   const startedAt=new Date().toISOString();
   await store.setJSON('scanner-universe-status-v2',{state:'building',startedAt,finishedAt:null,error:null,events:0,tickers:0});
   try{
+    const previous=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'}).catch(()=>null);
+    const previousTickers=[...new Set((previous?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
     const to=new Date(), from=new Date(to.getTime()-100*86400000);
-    // Pull every reported stock split in the 100-day window. Exchange scope is
-    // applied after resolving each ticker reference so NASDAQ, NYSE and NYSE
-    // American are all covered consistently.
     let next=`/stocks/v1/splits?execution_date.gte=${iso(from)}&execution_date.lte=${iso(to)}&sort=execution_date.asc&limit=5000`;
     const raw=[];
     while(next){
@@ -61,15 +60,29 @@ export async function refreshUniverse(){
     await Promise.all(Array.from({length:Math.min(8,tickers.length)},worker));
     const events=splitEvents.filter(x=>refs[x.ticker]);
     const eligible=[...new Set(events.map(x=>x.ticker))].sort();
-    console.info('[universe-refresh] split events=',splitEvents.length,'resolved references=',good,'eligible events=',events.length,'eligible tickers=',eligible.length);
     if(!eligible.length) throw new Error(`وجدت ${tickers.length} أحداث تقسيم لكن لم ينجح تحقق أي سهم ضمن NASDAQ أو NYSE أو NYSE American.`);
-    const payload={version:3,source:'massive-stock-splits',updatedAt:new Date().toISOString(),windowDays:100,events,tickers:eligible,references:Object.fromEntries(eligible.map(t=>[t,refs[t]])),referenceCount:good};
+
+    // Supabase holds one authoritative universe row. Every refresh synchronizes
+    // that row: new tickers are added, existing tickers are refreshed, and tickers
+    // outside the rolling 100-day window disappear from the row.
+    const previousSet=new Set(previousTickers), currentSet=new Set(eligible);
+    const addedTickers=eligible.filter(t=>!previousSet.has(t));
+    const removedTickers=previousTickers.filter(t=>!currentSet.has(t));
+    const updatedTickers=eligible.filter(t=>previousSet.has(t));
+    const updatedAt=new Date().toISOString();
+    const payload={version:4,source:'massive-stock-splits',updatedAt,windowDays:100,syncMode:'add-update-remove',events,tickers:eligible,references:Object.fromEntries(eligible.map(t=>[t,refs[t]])),referenceCount:good,previousCount:previousTickers.length,addedCount:addedTickers.length,updatedCount:updatedTickers.length,removedCount:removedTickers.length,addedTickers,removedTickers};
+
+    // Publish the authoritative universe row first. Only after it succeeds do we
+    // clean obsolete per-ticker short checkpoints for symbols that left the 100-day window.
     await store.setJSON('scanner-universe-v2',payload);
-    // Compatibility mirrors. They are written only by this authoritative universe lane.
+    if(removedTickers.length){
+      await Promise.all(removedTickers.map(t=>store.delete(`scanner-short-record:${t}`).catch(()=>{})));
+    }
     await store.setJSON('scanner-splits-v1',payload);
-    await store.setJSON('scanner-borrow-universe-v1',{version:2,source:'scanner-universe-v2',updatedAt:payload.updatedAt,tickers:eligible,references:payload.references});
-    await store.setJSON('scanner-universe-status-v2',{state:'ready',startedAt:null,finishedAt:payload.updatedAt,error:null,events:events.length,tickers:eligible.length,updatedAt:payload.updatedAt});
-    await store.setJSON('scanner-splits-status',{state:'ready',startedAt:null,finishedAt:payload.updatedAt,error:null,events:events.length,tickers:eligible.length,updatedAt:payload.updatedAt});
+    await store.setJSON('scanner-borrow-universe-v1',{version:3,source:'scanner-universe-v2',updatedAt,tickers:eligible,references:payload.references});
+    await store.setJSON('scanner-universe-status-v2',{state:'ready',startedAt:null,finishedAt:updatedAt,error:null,events:events.length,tickers:eligible.length,updatedAt,addedCount:addedTickers.length,updatedCount:updatedTickers.length,removedCount:removedTickers.length,addedTickers,removedTickers});
+    await store.setJSON('scanner-splits-status',{state:'ready',startedAt:null,finishedAt:updatedAt,error:null,events:events.length,tickers:eligible.length,updatedAt,addedCount:addedTickers.length,updatedCount:updatedTickers.length,removedCount:removedTickers.length});
+    console.info('[universe-refresh] synchronized Supabase universe',{events:events.length,eligible:eligible.length,added:addedTickers.length,updated:updatedTickers.length,removed:removedTickers.length});
     return payload;
   }catch(e){
     const message=String(e?.message||e||'Universe refresh failed');

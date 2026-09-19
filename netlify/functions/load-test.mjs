@@ -127,7 +127,7 @@ export default async function(request){
       maxMs:totals.maxMs||0,
       elapsedMs:Date.now()-started,
       rounds:roundsOut,
-      note:"جلسات مستقلة داخل وظيفة الاختبار لتجاوز Netlify Access الذي يمنع الاستدعاء الداخلي للدومين المحمي. يختبر عمليات الحساب والباحث والمفضلة وقراءة Blobs لكل جلسة، لكنه لا يقيس طبقة HTTP/Netlify Access ولا أجهزة أو عناوين IP مستقلة."
+      note:"جلسات مستقلة داخل وظيفة الاختبار لتجاوز Netlify Access الذي يمنع الاستدعاء الداخلي للدومين المحمي. يختبر عمليات الحساب والباحث والمفضلة وقراءة Supabase لكل جلسة، لكنه لا يقيس طبقة HTTP/Netlify Access ولا أجهزة أو عناوين IP مستقلة."
     });
   }catch(err){
     console.error("load-test error",err);
