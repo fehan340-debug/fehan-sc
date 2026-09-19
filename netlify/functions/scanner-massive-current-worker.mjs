@@ -40,7 +40,7 @@ export async function runMassiveCurrentUpdate(){
     await store.setJSON("scanner-massive-current-v1",{version:1,updatedAt,records:map});
     if(records.length&&fallback?.ready){
       const versionKey=`scanner-cache-data-v2:massive-${updatedAt.replace(/[^0-9]/g,"")}`;
-      const published={...fallback,updatedAt,currentUpdatedAt:updatedAt,records};
+      const published={...fallback,updatedAt:updatedAt, massiveCurrentUpdatedAt:updatedAt, currentUpdatedAt:updatedAt, technicalUpdatedAt:fallback.technicalUpdatedAt||fallback.fullRefreshAt||fallback.updatedAt||null, records};
       await store.setJSON(versionKey,published);
       await store.setJSON("scanner-cache-pointer-v2",{version:2,key:versionKey,updatedAt,records:records.length});
       await store.setJSON("scanner-cache-v1",published);

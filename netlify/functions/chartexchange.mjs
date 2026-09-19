@@ -263,40 +263,26 @@ export async function fetchFreeFloat(symbol, exchange='XNAS', options={}) {
   const upper=String(symbol||'').trim().toUpperCase();
   const scraperKey=String(process.env.SCRAPERAPI_KEY||'').trim();
   const signal=options?.signal;
-  if(!SYMBOL_RE.test(upper)) return null;
+  if(!SYMBOL_RE.test(upper)||!scraperKey)return null;
   const prefixes={XNAS:'nasdaq',XNYS:'nyse',XASE:'nyseamerican'};
   const prefix=prefixes[String(exchange||'XNAS').toUpperCase()]||'nasdaq';
-  const parseFloatHtml = html => extractFloatShares(html);
-  if(scraperKey){
-    const target=`${CE}/symbol/${prefix}-${encodeURIComponent(upper.toLowerCase())}/`;
-    const qs=new URLSearchParams({api_key:scraperKey,url:target,country_code:'us',render:'false'});
+  const target=`${CE}/symbol/${prefix}-${encodeURIComponent(upper.toLowerCase())}/`;
+  const attempts=[{render:'false'},{render:'false',ultra_premium:'true'}];
+  for(const extra of attempts){
+    const qs=new URLSearchParams({api_key:scraperKey,url:target,country_code:'us',render:'false',...extra});
     try{
-      const r=await fetch(`https://api.scraperapi.com/?${qs.toString()}`,{signal,headers:{accept:'text/html,application/xhtml+xml,text/plain,*/*;q=0.8', 'user-agent':'Mozilla/5.0 (compatible; NASDAQ-Scanner/1.0)'}});
+      const r=await fetch(`https://api.scraperapi.com/?${qs.toString()}`,{signal,headers:{accept:'text/html,application/xhtml+xml,text/plain,*/*;q=0.8','user-agent':'Mozilla/5.0 (compatible; NASDAQ-Scanner/1.0)'}});
+      if(!r.ok)continue;
       const html=await r.text();
-      const n=r.ok?parseFloatHtml(html):null;
+      const n=extractFloatShares(html);
       if(validFloat(n)){
-        console.info('[free-float] ChartExchange selector hit',{symbol:upper,exchange:String(exchange||'XNAS').toUpperCase(),selector:"td[contains(text(), 'Free Float')]/following-sibling::td",freeFloat:n});
+        console.info('[free-float] ChartExchange HTML hit',{symbol:upper,exchange:String(exchange||'XNAS').toUpperCase(),freeFloat:n,scraperOptions:extra});
         return n;
       }
     }catch(e){
       if(e?.name==='AbortError')throw e;
-      console.warn('[free-float] ChartExchange fetch failed',{symbol:upper,error:String(e?.message||e)});
+      console.warn('[free-float] ChartExchange/ScraperAPI failed',{symbol:upper,error:String(e?.message||e)});
     }
-  }
-  // Explicit Yahoo Finance fallback requested by the user.
-  const yahoo=`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(upper)}?modules=defaultKeyStatistics`;
-  try{
-    const r=await fetch(yahoo,{signal,headers:{accept:'application/json','user-agent':'Mozilla/5.0 (compatible; NASDAQ-Scanner/1.0)'}});
-    if(!r.ok)return null;
-    const d=await r.json();
-    const n=Number(d?.quoteSummary?.result?.[0]?.defaultKeyStatistics?.floatShares?.raw);
-    if(validFloat(n)){
-      console.info('[free-float] Yahoo fallback hit',{symbol:upper,freeFloat:n});
-      return n;
-    }
-  }catch(e){
-    if(e?.name==='AbortError')throw e;
-    console.warn('[free-float] Yahoo fallback failed',{symbol:upper,error:String(e?.message||e)});
   }
   return null;
 }

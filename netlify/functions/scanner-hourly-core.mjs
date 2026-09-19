@@ -128,6 +128,10 @@ function coreValid(r){return ['current','splitOpen','rsi','ma5','ma20','ema20','
 
 export async function runHourlyBuild({manual=false,force=true}={}){
   const store=getDataStore();
+  if(!manual){
+    const settings=await getSiteSettings().catch(()=>({auto_update_enabled:true}));
+    if(settings.auto_update_enabled!==true)return {ok:true,skipped:true,reason:'automatic-updates-disabled'};
+  }
   if(!manual && !force){
     const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
     const wd=parts.find(x=>x.type==='weekday')?.value||'';
@@ -201,7 +205,7 @@ export async function runHourlyBuild({manual=false,force=true}={}){
       console.warn('[hourly-refresh] fresh IPO refresh failed; retaining last valid IPO cache',String(e?.message||e));
       ipoCache=await readIpoCache();
     }
-    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-direct-html-fresh',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
+    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-direct-html-fresh',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
     await store.setJSON(versionKey,payload);
     await writeDataBundle(payload);
     try{
