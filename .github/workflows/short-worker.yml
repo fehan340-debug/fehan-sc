@@ -22,6 +22,11 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_TABLE: scanner_worker_store
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -48,27 +53,13 @@ jobs:
           cache: npm
 
       - name: Validate required secrets
-        env:
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          test -n "$NETLIFY_SITE_ID" || (echo "Missing NETLIFY_SITE_ID" && exit 1)
-          test -n "$NETLIFY_AUTH_TOKEN" || (echo "Missing NETLIFY_AUTH_TOKEN" && exit 1)
           test -n "$SCRAPERAPI_KEY" || (echo "Missing SCRAPERAPI_KEY" && exit 1)
           test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
           test -n "$SUPABASE_KEY" || (echo "Missing SUPABASE_KEY" && exit 1)
-          echo "Required worker secrets are present."
+          echo "Supabase and ScraperAPI secrets are present."
 
       - name: Run external short scraper
         env:
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SUPABASE_TABLE: scanner_worker_store
           FORCE_SHORT_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: node worker/short-worker.mjs
