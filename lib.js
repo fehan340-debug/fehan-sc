@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 
 // Supabase is the single persistent data store for the application.
 // Netlify Blobs is intentionally not used anywhere in the project.
-const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||"").trim().replace(/\/$/,"");
+const SUPABASE_URL=()=>{
+  let u=String(process.env.SUPABASE_URL||"").trim().replace(/\/+$/,"");
+  u=u.replace(/\/rest\/v1$/i,"");
+  return u;
+};
 const SUPABASE_KEY=()=>String(process.env.SUPABASE_KEY||"").trim();
 const SUPABASE_TABLE=()=>String(process.env.SUPABASE_TABLE||"scanner_worker_store").trim();
 
