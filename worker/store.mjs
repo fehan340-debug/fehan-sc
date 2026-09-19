@@ -1,7 +1,7 @@
 // Storage adapter for the external GitHub Actions worker.
-// GitHub Actions does not have Netlify's runtime context, so the worker uses
-// Supabase directly. Netlify Functions continue to use @netlify/blobs in their
-// own files; this adapter is intentionally independent of that runtime.
+// Supabase is the worker's primary store. Netlify Blobs is used only as a
+// read-through fallback for existing Netlify scanner data such as the
+// approved short universe and the current central cache.
 
 import { getStore as getNetlifyStore } from '@netlify/blobs';
 
@@ -10,13 +10,16 @@ const supabaseKey = String(process.env.SUPABASE_KEY || '').trim();
 const table = String(process.env.SUPABASE_TABLE || 'scanner_worker_store').trim();
 
 export function getNetlifyStoreSafe() {
+  const siteID = String(process.env.NETLIFY_SITE_ID || '').trim();
+  const token = String(process.env.NETLIFY_AUTH_TOKEN || '').trim();
+  if (!siteID || !token) {
+    console.warn('[worker/store] Netlify Blobs credentials are missing. NETLIFY_SITE_ID/NETLIFY_AUTH_TOKEN must be GitHub Actions secrets.');
+    return null;
+  }
   try {
-    const siteID = String(process.env.NETLIFY_SITE_ID || '').trim();
-    const token = String(process.env.NETLIFY_AUTH_TOKEN || '').trim();
-    if (!siteID || !token) return null;
     return getNetlifyStore('nasdaq-scanner-data', { siteID, token });
   } catch (error) {
-    console.warn('[worker/store] Netlify Blobs unavailable in this runtime:', error?.message || error);
+    console.warn('[worker/store] Netlify Blobs initialization failed:', error?.message || error);
     return null;
   }
 }
@@ -39,13 +42,17 @@ async function request(path, options = {}) {
     }
   });
   const body = await response.text();
-  if (!response.ok) throw new Error(`Supabase HTTP ${response.status}: ${body.slice(0, 500)}`);
+  if (!response.ok) {
+    throw new Error(`Supabase HTTP ${response.status}: ${body.slice(0, 500)}`);
+  }
   return body ? JSON.parse(body) : null;
 }
 
 export const store = {
-  async get(key, options = {}) {
-    const rows = await request(`${table}?select=key,value&key=eq.${encodeURIComponent(String(key))}&limit=1`);
+  async get(key) {
+    const rows = await request(
+      `${table}?select=key,value&key=eq.${encodeURIComponent(String(key))}&limit=1`
+    );
     return rows?.[0]?.value ?? null;
   },
 
@@ -62,8 +69,6 @@ export const store = {
   }
 };
 
-// Kept only as a guarded helper for compatibility/debugging. The external
-// worker must not depend on Netlify Blobs and never calls this automatically.
 export function getStore() {
   return getNetlifyStoreSafe();
 }

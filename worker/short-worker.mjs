@@ -74,7 +74,11 @@ async function finish(job,stamp){
 }
 
 async function createJob(trigger){
-  const universe=await getJsonWithNetlifyFallback('scanner-universe-v2');
+  // The approved short universe is normally produced by the Netlify scanner.
+  // Prefer scanner-universe-v2, then fall back to the dedicated short-universe
+  // copy if an older deployment has not populated v2 yet.
+  const universe=await getJsonWithNetlifyFallback('scanner-universe-v2')
+    || await getJsonWithNetlifyFallback('scanner-borrow-universe-v1');
   const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
   if(!tickers.length)throw new Error('لم يتم العثور على قائمة الأسهم المعتمدة للشورت في scanner-universe-v2.');
   const previous=await getJsonWithNetlifyFallback('scanner-borrow-v2');
