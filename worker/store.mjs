@@ -1,7 +1,8 @@
 // Supabase-only storage adapter for the external GitHub Actions worker.
 // No Netlify Blobs, site ID, or Netlify auth token is used anywhere in this worker.
 
-const supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
+let supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+supabaseUrl = supabaseUrl.replace(/\/rest\/v1$/i, '');
 const supabaseKey = String(process.env.SUPABASE_KEY || '').trim();
 const table = String(process.env.SUPABASE_TABLE || 'scanner_worker_store').trim();
 
