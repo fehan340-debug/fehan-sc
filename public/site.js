@@ -52,7 +52,7 @@ function massive(path){return "/.netlify/functions/massive?path="+encodeURICompo
 function chart(path){return "/.netlify/functions/chartexchange?path="+encodeURIComponent(path)}
 function massiveFromUrl(u){try{let x=new URL(u);return massive(x.pathname+x.search)}catch{return null}}
 
-let scannerCache=null, scannerCacheUpdatedAt=null, scannerIPOs=[];
+let scannerCache=null, scannerCacheUpdatedAt=null, scannerIPOs=[], scannerTechnicalUpdatedAt=null, scannerShortUpdatedAt=null;
 async function loadScannerCache(options={}){
   const wait=Boolean(options.wait), maxAttempts=Math.max(1,Math.min(60,Number(options.maxAttempts)||60));
   let triggered=false;
@@ -60,7 +60,7 @@ async function loadScannerCache(options={}){
     const r=await apiFetch('/.netlify/functions/scanner-cache');
     const d=await responseJSON(r);
     if(!r.ok)throw Error(d.error||'تعذر تحميل بيانات الباحث.');
-    if(d.ready){scannerCache=(Array.isArray(d.records)?d.records:[]).map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||null;return {...d,records:scannerCache};}
+    if(d.ready){scannerCache=(Array.isArray(d.records)?d.records:[]).map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||null;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||null;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||null;updateDataFreshness();return {...d,records:scannerCache};}
     scannerCache=[];scannerCacheUpdatedAt=null;
     if(!triggered){
       triggered=true;
@@ -74,6 +74,16 @@ async function loadScannerCache(options={}){
   }
   return {ready:false,records:[]};
 }
+function freshnessLabel(v){
+  if(!v)return 'غير متوفر';
+  const t=new Date(v).getTime(); if(!Number.isFinite(t))return 'غير متوفر';
+  const diff=Math.max(0,Date.now()-t), mins=Math.floor(diff/60000), hrs=Math.floor(mins/60), days=Math.floor(hrs/24);
+  const ago=days?`قبل ${days} يوم`:hrs?`قبل ${hrs} ساعة`:mins?`قبل ${mins} دقيقة`:'الآن';
+  const exact=new Date(v).toLocaleString('ar-SA');
+  return `${ago} (${exact})`;
+}
+function updateDataFreshness(){const el=$("dataFreshness");if(!el)return;el.textContent=`البيانات الفنية: ${freshnessLabel(scannerTechnicalUpdatedAt)}  |  بيانات الشورت: ${freshnessLabel(scannerShortUpdatedAt)}`;}
+setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
 
@@ -583,10 +593,27 @@ async function addAdminPanel(){
   }catch{}
 }
 let siteSettingsUnlocked=false;
+let siteSettingsUnlockPending=false;
+function closeSiteSettingsUnlock(){siteSettingsUnlockPending=false;const m=$("siteSettingsUnlockModal");if(m)m.classList.remove("show");const i=$("siteSettingsUnlockPassword");if(i){i.value="";}}
 async function unlockSiteSettings(){
-  const pass=prompt("أدخل كلمة مرور المدير لفتح إعدادات الموقع:");
-  if(pass===null)return false;
-  try{await adminAction("verify-site-settings",{adminPassword:pass});siteSettingsUnlocked=true;return true;}catch(e){siteSettingsUnlocked=false;alert(e.message||"كلمة مرور المدير غير صحيحة.");return false;}
+  if(siteSettingsUnlocked)return true;
+  const modal=$("siteSettingsUnlockModal"),input=$("siteSettingsUnlockPassword"),msg=$("siteSettingsUnlockMsg");
+  if(!modal||!input)return false;
+  siteSettingsUnlockPending=true;msg.textContent="";input.value="";modal.classList.add("show");setTimeout(()=>input.focus(),0);
+  return await new Promise(resolve=>{
+    const submit=async()=>{
+      const pass=input.value;
+      if(!pass){msg.textContent="أدخل كلمة المرور.";input.focus();return;}
+      const btn=$("siteSettingsUnlockSubmit");btn.disabled=true;
+      try{await adminAction("verify-site-settings",{adminPassword:pass});siteSettingsUnlocked=true;closeSiteSettingsUnlock();resolve(true);}
+      catch(e){siteSettingsUnlocked=false;msg.textContent=e.message||"كلمة مرور المدير غير صحيحة.";input.select();}
+      finally{btn.disabled=false;}
+    };
+    $("siteSettingsUnlockSubmit").onclick=submit;
+    $("siteSettingsUnlockCancel").onclick=()=>{closeSiteSettingsUnlock();resolve(false);};
+    $("siteSettingsUnlockClose").onclick=()=>{closeSiteSettingsUnlock();resolve(false);};
+    input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();submit();}if(e.key==='Escape'){e.preventDefault();closeSiteSettingsUnlock();resolve(false);}};
+  });
 }
 async function loadSiteSettingsPanel(){
   if(!siteSettingsUnlocked)return false;
@@ -601,12 +628,16 @@ async function loadSiteSettingsPanel(){
   }catch(e){siteSettingsUnlocked=false;alert(e.message||"تعذر فتح إعدادات الموقع.");return false;}
 }
 async function saveAutoUpdate(){
+  const btn=$("saveAutoUpdate"),msg=$("autoUpdateMsg");
   try{
     const enabled=$("autoUpdateToggle").checked;
+    btn.disabled=true;msg.textContent="جاري حفظ حالة التحديث التلقائي...";
     const d=await adminAction("save-site-settings",{autoUpdateEnabled:enabled,auto_update_enabled:enabled});
-    window.sitePricing=d.pricing;$("autoUpdateToggle").checked=(d.pricing.auto_update_enabled!==undefined?d.pricing.auto_update_enabled:d.pricing.autoUpdateEnabled)!==false;
-    $("autoUpdateMsg").textContent=enabled?"تم تفعيل التحديث التلقائي.":"تم إيقاف التحديث التلقائي. التحديثات اليدوية لا تتأثر.";
-  }catch(e){$("autoUpdateMsg").textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}
+    window.sitePricing=d.pricing;
+    const actual=(d.pricing.auto_update_enabled!==undefined?d.pricing.auto_update_enabled:d.pricing.autoUpdateEnabled)!==false;
+    $("autoUpdateToggle").checked=actual;
+    msg.textContent=actual?"تم تفعيل التحديث التلقائي. سيعمل جدول Massive كل 10 دقائق والشورت مرة كل ساعة.":"تم إيقاف التحديث التلقائي بالكامل. لن تبدأ أي جدولة جديدة، والتحديثات اليدوية تبقى مستقلة.";
+  }catch(e){msg.textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}finally{btn.disabled=false;}
 }
 if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;
 async function saveSiteMode(){
