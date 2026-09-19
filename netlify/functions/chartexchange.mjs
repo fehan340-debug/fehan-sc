@@ -418,7 +418,23 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
   }
   const ff=await fetchFreeFloat(upper,ex,{signal:externalSignal}).catch(e=>{ if(e?.name==='AbortError') throw e; return null; });
   if(ff!=null) return {ok:true,shares:null,fee:null,freeFloat:ff,free_float:ff,source:'scraperapi-chartexchange-float-selector',status:last?.status??0,scraperOptions:last?.scraperOptions||null};
-  return { ok:false, reason:'scrape-no-borrow-data', status:last?.status ?? 0, responsePreview:last?.preview || '', scraperOptions:last?.scraperOptions || null };
+
+  // Keep the failure actionable in GitHub Actions. The worker historically
+  // logged only `scrape-no-borrow-data`, which made it impossible to tell
+  // whether ScraperAPI returned ChartExchange HTML, a block/challenge page,
+  // JSON, or an HTTP error. Include a short sanitized preview in the reason.
+  const diagnosticPreview = String(last?.preview || '')
+    .replace(/\s+/g, ' ')
+    .replace(/(?:api_key|key|token|authorization)=?[^&\s]+/gi, '$1=[redacted]')
+    .slice(0, 650);
+  const diagnosticStatus = Number(last?.status || 0);
+  return {
+    ok:false,
+    reason:`scrape-no-borrow-data (HTTP ${diagnosticStatus || 'unknown'})${diagnosticPreview ? `: ${diagnosticPreview}` : ''}`,
+    status:diagnosticStatus,
+    responsePreview:diagnosticPreview,
+    scraperOptions:last?.scraperOptions || null
+  };
 }
 
 async function borrowFromApi(symbol, key) {
