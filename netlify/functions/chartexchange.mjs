@@ -386,8 +386,9 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
   // headless browser. If the normal proxy path is challenged, retry the same
   // HTTP GET through Ultra Premium Proxies.
   const attempts = [
-    { render: 'false' },
-    { render: 'false', ultra_premium: 'true' }
+    { render: 'false', premium: 'true', country_code: 'us', device_type: 'desktop' },
+    { render: 'false', premium: 'true', country_code: 'us', device_type: 'mobile' },
+    { render: 'false', premium: 'true', country_code: 'us', session_number: '1' }
   ];
   let last = null;
   for (const options of attempts) {

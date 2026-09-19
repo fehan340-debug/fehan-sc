@@ -1,4 +1,4 @@
-import { json,readJson,getRequests,saveRequests,randomToken,currentUser,getSiteSettings,getDataStore } from "../../lib.js";
+import { json,readJson,getRequests,saveRequests,randomToken,currentUser,getSiteSettings,getAttachmentStore } from "../../lib.js";
 export default async function(request){
   try{
     if(request.method==="POST"){
@@ -24,7 +24,7 @@ export default async function(request){
           const allowed=new Set(["image/png","image/jpeg","image/jpg","application/pdf"]);
           if(!allowed.has(type)) return json({error:"نوع المرفق غير مدعوم. المسموح PNG/JPG/PDF فقط."},400);
           const attachmentId=`support-attachment-${randomToken()}`;
-          await getDataStore().set(attachmentId,bytes,{contentType:type});
+          await getAttachmentStore().set(attachmentId,bytes,{contentType:type});
           attachment={id:attachmentId,name:String(b.attachment.name||"attachment"),type,size:bytes.byteLength,storedAt:new Date().toISOString()};
         }
         const reqs=await getRequests(); const id=randomToken().slice(0,16);
@@ -45,7 +45,7 @@ export default async function(request){
         const bytes=Buffer.from(b64,"base64");
         const attachmentId=`customer-attachment-${randomToken()}`;
         const type=String(b.proof.type||"application/octet-stream");
-        await getDataStore().set(attachmentId,bytes,{contentType:type});
+        await getAttachmentStore().set(attachmentId,bytes,{contentType:type});
         attachment={id:attachmentId,name:String(b.proof.name||"attachment"),type,size:bytes.byteLength,storedAt:new Date().toISOString()};
       }
       const reqs=await getRequests(); const id=randomToken().slice(0,16);
@@ -61,7 +61,7 @@ export default async function(request){
       const owner=(await getRequests()).find(x=>x?.proof?.id===attachmentId || x?.attachment?.id===attachmentId);
       const meta=owner?.proof?.id===attachmentId?owner.proof:owner?.attachment?.id===attachmentId?owner.attachment:null;
       if(!meta)return json({error:"المرفق غير موجود."},404);
-      const data=await getDataStore().get(attachmentId,{type:"arrayBuffer",consistency:"strong"});
+      const data=await getAttachmentStore().get(attachmentId,{type:"arrayBuffer",consistency:"strong"});
       if(!data)return json({error:"تعذر قراءة المرفق."},404);
       const download=String(url.searchParams.get("download")||"")==="1";
       const disposition=download?"attachment":"inline";

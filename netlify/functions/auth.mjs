@@ -1,4 +1,4 @@
-import { json,readJson,cookieMap,setSessionCookie,clearSessionCookie,randomToken,getUsers,verifyPassword,saveUsers,currentUser,safeUser,deviceFrom,ensureAdmin,getDataStore,getSiteSettings,getFavorites,saveFavorites } from "../../lib.js";
+import { json,readJson,cookieMap,setSessionCookie,clearSessionCookie,randomToken,getUsers,verifyPassword,saveUsers,currentUser,safeUser,deviceFrom,ensureAdmin,getSiteSettings,getFavorites,saveFavorites,getUserSettingsStore,getSessionStore } from "../../lib.js";
 export default async function(request){
   try{
     await ensureAdmin();
@@ -14,7 +14,7 @@ export default async function(request){
       if(!c || c.blocked) return json({error:"غير مصرح. سجّل الدخول."},401);
       const key=`scanner-settings:${String(c.user.email||"").toLowerCase()}`;
       if(request.method==="GET") {
-        const settings=await getDataStore().get(key,{type:"json"}) || null;
+        const settings=await getUserSettingsStore().get(key,{type:"json"}) || null;
         return json({ok:true,settings});
       }
       if(request.method==="POST") {
@@ -26,7 +26,7 @@ export default async function(request){
           rsiMax:Math.max(0,Math.min(100,Number(b.rsiMax)||30)),
           shortMax:String(b.shortMax??"").trim()
         };
-        await getDataStore().setJSON(key,clean);
+        await getUserSettingsStore().setJSON(key,clean);
         return json({ok:true,settings:clean});
       }
       return json({error:"طريقة الطلب غير مدعومة."},405);
@@ -94,11 +94,11 @@ export default async function(request){
       users[username]=u;
       await saveUsers(users);
       const token=randomToken();
-      await getDataStore().setJSON(`session:${token}`,{email:username,createdAt:now,expiresAt:new Date(Date.now()+2592000000).toISOString()});
+      await getSessionStore().setJSON(`session:${token}`,{email:username,createdAt:now,expiresAt:new Date(Date.now()+2592000000).toISOString()});
       return json({ok:true,user:safeUser(u)},200,{"set-cookie":setSessionCookie(token)});
     }
     if(action==="logout"){
-      const t=cookieMap(request).scanner_session;if(t) await getDataStore().delete(`session:${t}`);
+      const t=cookieMap(request).scanner_session;if(t) await getSessionStore().delete(`session:${t}`);
       return json({ok:true},200,{"set-cookie":clearSessionCookie()});
     }
     return json({error:"action غير معروف"},400);

@@ -52,7 +52,7 @@ function massive(path){return "/.netlify/functions/massive?path="+encodeURICompo
 function chart(path){return "/.netlify/functions/chartexchange?path="+encodeURIComponent(path)}
 function massiveFromUrl(u){try{let x=new URL(u);return massive(x.pathname+x.search)}catch{return null}}
 
-let scannerCache=null, scannerCacheUpdatedAt=null, scannerIPOs=[];
+let scannerCache=null, scannerCacheUpdatedAt=null, scannerIPOs=[], scannerTechnicalUpdatedAt=null, scannerShortUpdatedAt=null;
 async function loadScannerCache(options={}){
   const wait=Boolean(options.wait), maxAttempts=Math.max(1,Math.min(60,Number(options.maxAttempts)||60));
   let triggered=false;
@@ -60,7 +60,7 @@ async function loadScannerCache(options={}){
     const r=await apiFetch('/.netlify/functions/scanner-cache');
     const d=await responseJSON(r);
     if(!r.ok)throw Error(d.error||'تعذر تحميل بيانات الباحث.');
-    if(d.ready){scannerCache=(Array.isArray(d.records)?d.records:[]).map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||null;return {...d,records:scannerCache};}
+    if(d.ready){scannerCache=(Array.isArray(d.records)?d.records:[]).map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||null;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||null;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||null;updateDataFreshness();return {...d,records:scannerCache};}
     scannerCache=[];scannerCacheUpdatedAt=null;
     if(!triggered){
       triggered=true;
@@ -74,6 +74,16 @@ async function loadScannerCache(options={}){
   }
   return {ready:false,records:[]};
 }
+function freshnessLabel(v){
+  if(!v)return 'غير متوفر';
+  const t=new Date(v).getTime(); if(!Number.isFinite(t))return 'غير متوفر';
+  const diff=Math.max(0,Date.now()-t), mins=Math.floor(diff/60000), hrs=Math.floor(mins/60), days=Math.floor(hrs/24);
+  const ago=days?`قبل ${days} يوم`:hrs?`قبل ${hrs} ساعة`:mins?`قبل ${mins} دقيقة`:'الآن';
+  const exact=new Date(v).toLocaleString('ar-SA');
+  return `${ago} (${exact})`;
+}
+function updateDataFreshness(){const el=$("dataFreshness");if(!el)return;el.textContent=`البيانات الفنية: ${freshnessLabel(scannerTechnicalUpdatedAt)}  |  بيانات الشورت: ${freshnessLabel(scannerShortUpdatedAt)}`;}
+setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
 
@@ -190,10 +200,53 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
+  const session=String(stock?.priceSession||"").toLowerCase();
   const pre=Number(stock?.preMarketPrice);
+  const after=Number(stock?.afterHoursPrice);
   const current=Number(stock?.currentPrice ?? stock?.current);
   const close=Number(stock?.closePrice);
-  return Number.isFinite(pre)&&pre>0?pre:(Number.isFinite(current)&&current>0?current:(Number.isFinite(close)&&close>0?close:null));
+  if(session==="pre"&&Number.isFinite(pre)&&pre>0)return pre;
+  if(session==="after"&&Number.isFinite(after)&&after>0)return after;
+  if(Number.isFinite(current)&&current>0)return current;
+  if(session==="pre"&&Number.isFinite(pre)&&pre>0)return pre;
+  if(session==="after"&&Number.isFinite(after)&&after>0)return after;
+  return Number.isFinite(close)&&close>0?close:null;
+}
+let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
+async function loadCurrentPrices(){
+  try{
+    const r=await apiFetch('/.netlify/functions/scanner-current');
+    const d=await responseJSON(r);
+    if(!r.ok||!d.ok)return false;
+    currentPricesUpdatedAt=d.updatedAt||null; currentPriceSession=d.session||'closed';
+    const map=d.records||{};
+    if(Array.isArray(scannerCache)){
+      for(const row of scannerCache){
+        const live=map[String(row?.ticker||'').toUpperCase()];
+        if(!live)continue;
+        row.current=live.price; row.currentPrice=live.price; row.preMarketPrice=live.preMarket; row.afterHoursPrice=live.afterHours; row.priceSession=live.priceSession; row.priceSource=live.priceSource; row.currentUpdatedAt=live.updatedAt; row.changePct=live.changePct;
+      }
+      updateVisibleCurrentPrices();
+    }
+    return true;
+  }catch(e){console.warn('[current-price] refresh failed',e?.message||e);return false;}
+}
+function updateVisibleCurrentPrices(){
+  document.querySelectorAll('#results tr[data-ticker]').forEach(tr=>{
+    const x=cacheFind({ticker:tr.dataset.ticker,splitDate:tr.dataset.split||''}); if(!x)return;
+    const price=displayPrice(x),open=Number(x.splitOpen);
+    if(tr.cells[4])tr.cells[4].textContent=Number.isFinite(price)?'$'+fmt(price):'—';
+    if(tr.cells[5])tr.cells[5].textContent=Number.isFinite(price)&&Number.isFinite(open)&&open>0?fmt((open-price)/open*100)+'%':'—';
+  });
+  if(currentPricesUpdatedAt){
+    const el=$("currentPriceFreshness");
+    if(el)el.textContent=`السعر الحالي: ${freshnessLabel(currentPricesUpdatedAt)} — ${currentPriceSession==="pre"?'بري ماركت':currentPriceSession==="regular"?'الماركت':currentPriceSession==="after"?'أفتر ماركت':'خارج الجلسة'}`;
+  }
+}
+function startCurrentPriceRefresh(){
+  clearInterval(currentPriceTimer);
+  loadCurrentPrices();
+  currentPriceTimer=setInterval(()=>{if(document.visibilityState==='visible'&&sessionReady)loadCurrentPrices();},30000);
 }
 function formatCompactShares(value){
   const n=Number(value); if(!Number.isFinite(n)||n<=0)return '—';
@@ -269,6 +322,7 @@ async function run(){
    setStatus("جاري البحث...");
    const cache=await loadScannerCache({wait:true,maxAttempts:180});
    if(!cache.ready||!scannerCache.length){setStatus(cache.buildError?`فشل تجهيز بيانات الباحث: ${escapeHtml(cache.buildError)}`:"بيانات الباحث قيد التجهيز لأول مرة. انتظر اكتمال الكاش ثم اضغط بحث مرة أخرى.","err");return;}
+   await loadCurrentPrices();
    const cutoff=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
    const selectedExchange=$("splitExchange")?.value||"ALL";
    const candidates=scannerCache.filter(x=>(selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)&&x.splitDate>=cutoff&&Number.isFinite(Number(x.current))&&Number.isFinite(Number(x.splitOpen))&&Number(x.current)<=maxPrice&&Number(x.current)<=Number(x.splitOpen)*(1-drop/100)&&Number.isFinite(Number(x.rsi))&&Number(x.rsi)<=rsiMax&&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax)));
@@ -457,6 +511,7 @@ async function loadMe(){
 }
 function showResearchNotice(){$("researchNotice").classList.add("show");}
 setInterval(()=>{if(maintenanceActive)loadMe();},30000);
+startCurrentPriceRefresh();
 $("noticeOk").onclick=()=>$("researchNotice").classList.remove("show");
 $("loginBtn").onclick=async()=>{
   $("loginMsg").textContent="جاري تسجيل الدخول...";
@@ -583,10 +638,27 @@ async function addAdminPanel(){
   }catch{}
 }
 let siteSettingsUnlocked=false;
+let siteSettingsUnlockPending=false;
+function closeSiteSettingsUnlock(){siteSettingsUnlockPending=false;const m=$("siteSettingsUnlockModal");if(m)m.classList.remove("show");const i=$("siteSettingsUnlockPassword");if(i){i.value="";}}
 async function unlockSiteSettings(){
-  const pass=prompt("أدخل كلمة مرور المدير لفتح إعدادات الموقع:");
-  if(pass===null)return false;
-  try{await adminAction("verify-site-settings",{adminPassword:pass});siteSettingsUnlocked=true;return true;}catch(e){siteSettingsUnlocked=false;alert(e.message||"كلمة مرور المدير غير صحيحة.");return false;}
+  if(siteSettingsUnlocked)return true;
+  const modal=$("siteSettingsUnlockModal"),input=$("siteSettingsUnlockPassword"),msg=$("siteSettingsUnlockMsg");
+  if(!modal||!input)return false;
+  siteSettingsUnlockPending=true;msg.textContent="";input.value="";modal.classList.add("show");setTimeout(()=>input.focus(),0);
+  return await new Promise(resolve=>{
+    const submit=async()=>{
+      const pass=input.value;
+      if(!pass){msg.textContent="أدخل كلمة المرور.";input.focus();return;}
+      const btn=$("siteSettingsUnlockSubmit");btn.disabled=true;
+      try{await adminAction("verify-site-settings",{adminPassword:pass});siteSettingsUnlocked=true;closeSiteSettingsUnlock();resolve(true);}
+      catch(e){siteSettingsUnlocked=false;msg.textContent=e.message||"كلمة مرور المدير غير صحيحة.";input.select();}
+      finally{btn.disabled=false;}
+    };
+    $("siteSettingsUnlockSubmit").onclick=submit;
+    $("siteSettingsUnlockCancel").onclick=()=>{closeSiteSettingsUnlock();resolve(false);};
+    $("siteSettingsUnlockClose").onclick=()=>{closeSiteSettingsUnlock();resolve(false);};
+    input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();submit();}if(e.key==='Escape'){e.preventDefault();closeSiteSettingsUnlock();resolve(false);}};
+  });
 }
 async function loadSiteSettingsPanel(){
   if(!siteSettingsUnlocked)return false;
@@ -601,12 +673,16 @@ async function loadSiteSettingsPanel(){
   }catch(e){siteSettingsUnlocked=false;alert(e.message||"تعذر فتح إعدادات الموقع.");return false;}
 }
 async function saveAutoUpdate(){
+  const btn=$("saveAutoUpdate"),msg=$("autoUpdateMsg");
   try{
     const enabled=$("autoUpdateToggle").checked;
+    btn.disabled=true;msg.textContent="جاري حفظ حالة التحديث التلقائي...";
     const d=await adminAction("save-site-settings",{autoUpdateEnabled:enabled,auto_update_enabled:enabled});
-    window.sitePricing=d.pricing;$("autoUpdateToggle").checked=(d.pricing.auto_update_enabled!==undefined?d.pricing.auto_update_enabled:d.pricing.autoUpdateEnabled)!==false;
-    $("autoUpdateMsg").textContent=enabled?"تم تفعيل التحديث التلقائي.":"تم إيقاف التحديث التلقائي. التحديثات اليدوية لا تتأثر.";
-  }catch(e){$("autoUpdateMsg").textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}
+    window.sitePricing=d.pricing;
+    const actual=(d.pricing.auto_update_enabled!==undefined?d.pricing.auto_update_enabled:d.pricing.autoUpdateEnabled)!==false;
+    $("autoUpdateToggle").checked=actual;
+    msg.textContent=actual?"تم تفعيل التحديث التلقائي. سيعمل جدول Massive كل 10 دقائق والشورت مرة كل ساعة.":"تم إيقاف التحديث التلقائي بالكامل. لن تبدأ أي جدولة جديدة، والتحديثات اليدوية تبقى مستقلة.";
+  }catch(e){msg.textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}finally{btn.disabled=false;}
 }
 if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;
 async function saveSiteMode(){
@@ -745,11 +821,21 @@ async function loadAdminRequests(filter="all",supportState="pending"){
     document.querySelectorAll(".replySupport").forEach(b=>b.onclick=()=>openAdminReply(b.dataset.id));
   }catch(e){(filter==="support"?$("adminSupportOut"):$("adminOut")).textContent=e.message}
 }
-$("adminCreate").onclick=async()=>{try{const email=$("adminEmail").value.trim(),password=$("adminPassword").value,days=Number($("adminDays").value)||30;await adminAction("create",{email,password,plan:$("adminPlan").value,days});alert("تم إنشاء/تفعيل الحساب");await loadAdminUsers()}catch(e){alert(e.message)}};
-$("adminRefresh").onclick=loadAdminUsers;
+function syncAdminDaysToPlan(){const p=(window.sitePricing?.plans||[]).find(x=>x.id===$("adminPlan")?.value);if(p&&$("adminDays"))$("adminDays").value=p.days;}
+$("adminPlan")?.addEventListener('change',syncAdminDaysToPlan);
+$("adminCreate").onclick=async()=>{
+  const btn=$("adminCreate"); if(btn?.dataset.busy==='1')return;
+  const email=$("adminEmail").value.trim(),password=$("adminPassword").value,plan=$("adminPlan").value,days=Math.max(1,Number($("adminDays").value)||30);
+  btn.dataset.busy='1';btn.disabled=true;const old=btn.textContent;btn.textContent='جاري الإنشاء / التفعيل...';
+  try{const d=await adminAction("create",{email,password,plan,days});alert(`تم إنشاء/تفعيل الحساب\n${d.user?.email||email}`);await loadAdminUsers();}
+  catch(e){alert(e.message||'تعذر إنشاء/تفعيل الحساب.');}
+  finally{btn.disabled=false;btn.dataset.busy='0';btn.textContent=old;}
+};
+$("adminRefresh").onclick=async()=>{const b=$("adminRefresh");if(b?.dataset.busy==='1')return;b.dataset.busy='1';b.disabled=true;try{await loadAdminUsers();}finally{b.disabled=false;b.dataset.busy='0';}};
 let adminSupportState="pending";
 function setAdminSupportTab(state){adminSupportState=state;document.querySelectorAll(".supportTab").forEach(b=>b.classList.toggle("active",b.dataset.supportFilter===state));loadAdminRequests("support",state);}
-$("adminReq").onclick=()=>loadAdminRequests("new");$("adminRenewReq").onclick=()=>loadAdminRequests("renewal");$("adminSupport").onclick=()=>loadAdminRequests("support",adminSupportState);
+async function loadAdminRequestsButton(id,filter,state){const b=$(id);if(!b||b.dataset.busy==='1')return;b.dataset.busy='1';b.disabled=true;const old=b.textContent;b.textContent='جاري التحميل...';try{await loadAdminRequests(filter,state);}finally{b.disabled=false;b.dataset.busy='0';b.textContent=old;}}
+$("adminReq").onclick=()=>loadAdminRequestsButton("adminReq","new");$("adminRenewReq").onclick=()=>loadAdminRequestsButton("adminRenewReq","renewal");$("adminSupport").onclick=()=>loadAdminRequestsButton("adminSupport","support",adminSupportState);
 document.querySelectorAll(".supportTab").forEach(b=>b.onclick=()=>setAdminSupportTab(b.dataset.supportFilter));
 async function pollRefreshStatus(kind,msg,maxMs=120000){
   const started=Date.now();
@@ -839,6 +925,7 @@ bindSingleFlightClick("refreshBorrowNow",btn=>triggerBorrowUpdate(btn,$("borrowA
 bindSingleFlightClick("refreshMassiveCurrent",btn=>triggerMassiveCurrentUpdate(btn,$("massiveCurrentAdminMsg")));
 bindSingleFlightClick("refreshSavedCache",btn=>triggerSavedCacheUpdate(btn,$("savedCacheAdminMsg")));
 bindSingleFlightClick("refreshDailySplits",btn=>triggerDailySplitUpdate(btn,$("dailySplitsAdminMsg")));
+bindSingleFlightClick("refreshSiteStats",()=>loadSiteStats());
 async function loadSiteStats(){
   const out=$("siteStatsOut");if(!out)return;out.textContent="جاري تحميل الإحصائيات...";
   try{
@@ -877,7 +964,19 @@ async function showAdminPanel(name){
 }
 document.querySelectorAll("[data-admin-panel]").forEach(b=>b.onclick=()=>showAdminPanel(b.dataset.adminPanel));document.querySelectorAll(".adminBack").forEach(b=>b.onclick=showAdminHome);
 
-async function approveRequest(id){try{const email=prompt("إيميل العميل","")||"";const pass=prompt("كلمة المرور (اختياري)","")||"";const d=await adminAction("approve",{id,email,password:pass});alert(`تم التفعيل\nالحساب: ${d.email}\nكلمة المرور: ${d.password}`);await loadAdminRequests()}catch(e){alert(e.message)}}
+async function approveRequest(id){
+  const btn=[...document.querySelectorAll('.approveReq')].find(x=>x.dataset.id===id);
+  if(btn?.dataset.busy==='1')return;
+  if(btn)btn.dataset.busy='1';
+  const old=btn?.textContent; if(btn){btn.disabled=true;btn.textContent='جاري التفعيل...';}
+  try{
+    const d=await adminAction('approve',{id});
+    alert(`تم التفعيل\nالحساب: ${d.email}\nكلمة المرور: ${d.password}`);
+    await loadAdminRequests();
+    await loadAdminUsers();
+  }catch(e){alert(e.message||'تعذر تفعيل الطلب.');}
+  finally{if(btn){btn.disabled=false;btn.textContent=old||'تفعيل';btn.dataset.busy='0';}}
+}
 
 // حفظ إعدادات الباحث تلقائيًا للحساب المسجل، مع فرض الحد الأقصى 100 يوم فورًا.
 ["days","maxPrice","drop","rsiMax","shortMax"].forEach(id=>{const el=$(id);if(el){el.addEventListener("input",()=>{if(id==="days")clampScannerDays();});el.addEventListener("change",()=>{if(id==="days")clampScannerDays();});}});

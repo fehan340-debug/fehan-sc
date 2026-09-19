@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { json,readJson,getUsers,saveUsers,getRequests,saveRequests,makePasswordRecord,safeUser,randomToken,currentUser,cookieMap,getDataStore,getSiteSettings,saveSiteSettings } from "../../lib.js";
+import { json,readJson,getUsers,saveUsers,getRequests,saveRequests,makePasswordRecord,safeUser,randomToken,currentUser,cookieMap,getDataStore,getSiteSettings,saveSiteSettings,getSessionStore } from "../../lib.js";
 export default async function(request){
   try{
     const c=await currentUser(request); if(!c?.user?.admin)return json({error:"غير مصرح."},403);
@@ -14,21 +14,21 @@ export default async function(request){
       if(a.length!==bb.length||!crypto.timingSafeEqual(a,bb))return json({error:"كلمة مرور المدير غير صحيحة."},403);
       const token=cookieMap(request).scanner_session;
       if(!token)return json({error:"جلسة المدير غير موجودة."},401);
-      const session=await getDataStore().get(`session:${token}`,{type:"json"});
+      const session=await getSessionStore().get(`session:${token}`,{type:"json"});
       if(!session)return json({error:"جلسة المدير منتهية."},401);
       session.siteSettingsUnlockedUntil=Date.now()+30*60*1000;
-      await getDataStore().setJSON(`session:${token}`,session);
+      await getSessionStore().setJSON(`session:${token}`,session);
       return json({ok:true,unlockedUntil:session.siteSettingsUnlockedUntil});
     }
     if(action==="site-settings") {
       const token=cookieMap(request).scanner_session;
-      const session=token?await getDataStore().get(`session:${token}`,{type:"json"}):null;
+      const session=token?await getSessionStore().get(`session:${token}`,{type:"json"}):null;
       if(!session?.siteSettingsUnlockedUntil || Date.now()>Number(session.siteSettingsUnlockedUntil))return json({error:"أدخل كلمة مرور المدير لفتح إعدادات الموقع."},403);
       return json({pricing:await getSiteSettings()});
     }
     if(action==="save-site-settings") {
       const token=cookieMap(request).scanner_session;
-      const session=token?await getDataStore().get(`session:${token}`,{type:"json"}):null;
+      const session=token?await getSessionStore().get(`session:${token}`,{type:"json"}):null;
       if(!session?.siteSettingsUnlockedUntil || Date.now()>Number(session.siteSettingsUnlockedUntil))return json({error:"أدخل كلمة مرور المدير لفتح إعدادات الموقع."},403);
       const current=await getSiteSettings();
       const mode=["normal","maintenance","development"].includes(String(b.siteMode))?String(b.siteMode):current.siteMode;
@@ -111,7 +111,7 @@ export default async function(request){
       const email=String(b.email||"").trim().toLowerCase(),password=String(b.password||"");
       if(!email||password.length<6)return json({error:"الإيميل وكلمة المرور (6 أحرف على الأقل) مطلوبة."},400);
       const pricing=await getSiteSettings(); const plan=pricing.plans.find(p=>p.id===String(b.plan||"")); if(!plan)return json({error:"الباقة غير موجودة."},400);
-      const days=plan.days,expires=new Date(Date.now()+days*86400000).toISOString().slice(0,10);
+      const requestedDays=Number(b.days); const days=Number.isFinite(requestedDays)&&requestedDays>0?Math.floor(requestedDays):plan.days; const expires=new Date(Date.now()+days*86400000).toISOString().slice(0,10);
       const now=new Date().toISOString(); users[email]={email,admin:false,status:"active",plan:String(b.plan),subscriptionStartedAt:now.slice(0,10),expiresAt:expires,deviceId:null,password:makePasswordRecord(password),createdAt:now,firstLoginAt:null,lastLoginAt:null};
       await saveUsers(users); return json({ok:true,user:safeUser(users[email])});
     }

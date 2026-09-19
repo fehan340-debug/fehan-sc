@@ -3,59 +3,118 @@ import { currentUser } from "../../lib.js";
 
 const BASE="https://api.massive.com";
 const KEY=()=>String(process.env.MASSIVE_API_KEY||"").trim();
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
-async function getSnapshot(){
+function etParts(date=new Date()){
+  return Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date).map(x=>[x.type,x.value]));
+}
+function marketSession(date=new Date()){
+  const p=etParts(date), mins=Number(p.hour)*60+Number(p.minute);
+  if(mins>=240&&mins<570)return 'pre';
+  if(mins>=570&&mins<960)return 'regular';
+  if(mins>=960&&mins<1200)return 'after';
+  return 'closed';
+}
+function timestampMs(value){
+  const n=Number(value); if(!Number.isFinite(n)||n<=0)return null;
+  if(n>1e17)return n/1e6;      // nanoseconds
+  if(n>1e14)return n/1e3;      // microseconds
+  if(n>1e11)return n;          // milliseconds
+  return n*1000;               // seconds
+}
+function tradeSession(ts,now=new Date()){
+  const ms=timestampMs(ts); if(!ms)return null;
+  const d=new Date(ms); if(Number.isNaN(d.getTime()))return null;
+  const a=etParts(d), b=etParts(now);
+  if(a.year!==b.year||a.month!==b.month||a.day!==b.day)return null;
+  const mins=Number(a.hour)*60+Number(a.minute);
+  if(mins>=240&&mins<570)return 'pre';
+  if(mins>=570&&mins<960)return 'regular';
+  if(mins>=960&&mins<1200)return 'after';
+  return null;
+}
+async function getSnapshot(tickers){
   const key=KEY(); if(!key) throw new Error("MASSIVE_API_KEY is not configured.");
-  const r=await fetch(`${BASE}/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&apiKey=${encodeURIComponent(key)}`,{headers:{accept:"application/json"}});
-  const text=await r.text(); let d={}; try{d=text?JSON.parse(text):{};}catch{}
-  if(!r.ok) throw new Error(`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`);
-  return d;
+  const list=[...new Set(tickers.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))];
+  if(!list.length)return {tickers:[]};
+  const path=`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&tickers=${encodeURIComponent(list.join(','))}`;
+  let last='';
+  for(let i=0;i<4;i++){
+    const r=await fetch(`${BASE}${path}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:"application/json"}});
+    const text=await r.text(); let d={}; try{d=text?JSON.parse(text):{};}catch{}
+    if(r.ok)return d;
+    last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
+    if((r.status===429||r.status>=500)&&i<3){await sleep(500*(i+1));continue;}
+    throw new Error(last);
+  }
+  throw new Error(last||'Massive snapshot failed.');
+}
+function choosePrice(x,session,now){
+  const tradePrice=Number(x?.lastTrade?.p);
+  const tradeSess=tradeSession(x?.lastTrade?.t,now);
+  const dayClose=Number(x?.day?.c);
+  const prevClose=Number(x?.prevDay?.c);
+  const lastTrade=Number.isFinite(tradePrice)&&tradePrice>0?tradePrice:null;
+  let price=null, source=null;
+  if(session==='pre'){
+    if(tradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
+    else if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
+    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
+  }else if(session==='regular'){
+    if(tradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
+    else if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
+    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
+  }else if(session==='after'){
+    if(tradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
+    else if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
+    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
+  }else{
+    if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
+    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
+    else if(Number.isFinite(prevClose)&&prevClose>0){price=prevClose;source='previousClose';}
+  }
+  if(!Number.isFinite(price)||price<=0)return null;
+  const changeRaw=Number(x?.todaysChangePerc);
+  return {price,regularPrice:Number.isFinite(lastTrade)?lastTrade:(Number.isFinite(dayClose)?dayClose:null),preMarket:Number.isFinite(lastTrade)&&tradeSess==='pre'?lastTrade:null,afterHours:Number.isFinite(lastTrade)&&tradeSess==='after'?lastTrade:null,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:Number.isFinite(prevClose)&&prevClose>0?prevClose:null,changePct:Number.isFinite(changeRaw)?changeRaw:(Number.isFinite(prevClose)&&prevClose>0?(price-prevClose)/prevClose*100:null)};
 }
 
 export async function runMassiveCurrentUpdate(){
   const store=getDataStore();
   const lock=await store.get("scanner-massive-current-lock",{type:"json",consistency:"strong"}).catch(()=>null);
-  if(lock?.startedAt && Date.now()-new Date(lock.startedAt).getTime()<10*60*1000) return {ok:true,alreadyRunning:true};
+  if(lock?.startedAt&&Date.now()-new Date(lock.startedAt).getTime()<90*1000)return {ok:true,alreadyRunning:true};
   const startedAt=new Date().toISOString();
   await store.setJSON("scanner-massive-current-lock",{startedAt});
   await store.setJSON("scanner-massive-current-status",{state:"building",startedAt,finishedAt:null,error:null});
   try{
-    const snap=await getSnapshot(), map={};
-    const updatedAt=new Date().toISOString();
+    const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'}).catch(()=>null);
+    const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))];
+    if(!tickers.length)throw new Error('لا توجد قائمة أسهم معتمدة لتحديث الأسعار الحالية.');
+    const now=new Date(), session=marketSession(now), snap=await getSnapshot(tickers), map={};
     for(const x of snap.tickers||[]){
-      const t=String(x.ticker||"").toUpperCase();
-      const trade=Number(x.lastTrade?.p),day=Number(x.day?.c),min=Number(x.min?.c);
-      const price=Number.isFinite(trade)&&trade>0?trade:(Number.isFinite(day)&&day>0?day:(Number.isFinite(min)&&min>0?min:null));
-      if(!t||!Number.isFinite(price)||price<=0) continue;
-      const prev=Number(x.prevDay?.c), changePct=Number(x.todaysChangePerc);
-      map[t]={price,prev:Number.isFinite(prev)?prev:null,changePct:Number.isFinite(changePct)?changePct:null,updatedAt};
+      const t=String(x?.ticker||'').toUpperCase(); if(!t)continue;
+      const row=choosePrice(x,session,now); if(row)map[t]={...row,updatedAt:now.toISOString()};
     }
+    const payload={version:2,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length};
+    await store.setJSON('scanner-massive-current-v1',payload);
+    await store.setJSON('scanner-current-price-v1',payload);
+    await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
+    // Keep the persistent scanner snapshot's current field fresh as well. This is
+    // not the customer-facing edge response; the lightweight current endpoint
+    // below is used for sub-minute UI refreshes.
     const pointer=await store.get("scanner-cache-pointer-v2",{type:"json",consistency:"strong"}).catch(()=>null);
-    const cache=pointer?.key?await store.get(pointer.key,{type:"json",consistency:"strong"}).catch(()=>null):null;
-    const fallback=cache?.ready?cache:await store.get("scanner-cache-v1",{type:"json",consistency:"strong"}).catch(()=>null);
-    const records=Array.isArray(fallback?.records)?fallback.records.map(row=>{
-      const live=map[String(row.ticker||"").toUpperCase()];
-      return live?{...row,current:live.price,changePct:live.changePct,currentUpdatedAt:updatedAt}:row;
-    }):[];
-    await store.setJSON("scanner-massive-current-v1",{version:1,updatedAt,records:map});
-    if(records.length&&fallback?.ready){
-      const versionKey=`scanner-cache-data-v2:massive-${updatedAt.replace(/[^0-9]/g,"")}`;
-      const published={...fallback,updatedAt:updatedAt, massiveCurrentUpdatedAt:updatedAt, currentUpdatedAt:updatedAt, technicalUpdatedAt:fallback.technicalUpdatedAt||fallback.fullRefreshAt||fallback.updatedAt||null, records};
-      await store.setJSON(versionKey,published);
-      await store.setJSON("scanner-cache-pointer-v2",{version:2,key:versionKey,updatedAt,records:records.length});
-      await store.setJSON("scanner-cache-v1",published);
-    }else{
-      const { runHourlyBuild }=await import("./scanner-hourly-core.mjs");
-      await runHourlyBuild({manual:true,force:true});
+    const cache=pointer?.key?await store.get(pointer.key,{type:"json",consistency:"strong"}).catch(()=>null):await store.get("scanner-cache-v1",{type:"json",consistency:"strong"}).catch(()=>null);
+    if(cache?.ready&&Array.isArray(cache.records)){
+      const records=cache.records.map(row=>{const live=map[String(row?.ticker||'').toUpperCase()];return live?{...row,current:live.price,currentPrice:live.price,preMarketPrice:live.preMarket,afterHoursPrice:live.afterHours,priceSession:live.priceSession,priceSource:live.priceSource,currentUpdatedAt:live.updatedAt,changePct:live.changePct}:row;});
+      const merged={...cache,records,currentUpdatedAt:now.toISOString(),massiveCurrentUpdatedAt:now.toISOString()};
+      await store.setJSON('scanner-cache-v1',merged);
     }
-    const finalCache=await store.get("scanner-cache-v1",{type:"json",consistency:"strong"}).catch(()=>null);
-    const scannerRecords=Array.isArray(finalCache?.records)?finalCache.records.length:records.length;
-    await store.setJSON("scanner-massive-current-status",{state:"ready",startedAt:null,finishedAt:updatedAt,error:null,marketTickers:Object.keys(map).length,scannerRecords});
-    return {ok:true,updatedAt,marketTickers:Object.keys(map).length,scannerRecords};
+    const result={ok:true,updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length};
+    return result;
   }catch(e){
     const message=String(e?.message||e||"Unknown Massive current update error");
     console.error("massive current worker failed",e);
     await store.setJSON("scanner-massive-current-status",{state:"error",startedAt:null,finishedAt:new Date().toISOString(),error:message});
+    await store.setJSON("scanner-current-price-status",{state:"error",updatedAt:new Date().toISOString(),error:message});
     throw e;
   }finally{try{await store.delete("scanner-massive-current-lock");}catch{}}
 }

@@ -13,7 +13,7 @@ export default async function(request){
     // Let the CDN/Edge serve the same snapshot for up to 5 minutes,
     // then revalidate it in the background while allowing stale data briefly.
     const edgeCacheHeaders={
-      'Cache-Control':'public, max-age=300, s-maxage=300, stale-while-revalidate=300'
+      'Cache-Control':'public, max-age=300, s-maxage=300, stale-while-revalidate=300, stale-if-error=86400', 'Surrogate-Control':'max-age=300, stale-while-revalidate=300, stale-if-error=86400', 'Vary':'Accept-Encoding'
     };
     if(cache?.ready&&Array.isArray(cache.records)) return json(
       {ok:true,...cache,ipos:ipo?.records||[],ipoUpdatedAt:ipo?.updatedAt||null},

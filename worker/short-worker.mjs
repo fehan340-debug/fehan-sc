@@ -53,8 +53,35 @@ async function finish(job,stamp){
   await setJson('scanner-borrow-pointer-v2',{version:5,key:versionedKey,updatedAt:stamp,total:job.total,liveCount:doneUnique,missingCount:Math.max(0,job.total-doneUnique)});
   await setJson('scanner-borrow-v1',payload);
   await setJson('scanner-borrow-v2',payload);
+  // Publish the completed short snapshot into the same market snapshot that the
+  // browser reads. This happens once at the top of the hour, not once per ticker,
+  // so customers never see a half-written short dataset.
   const central=await getJson('scanner-cache-v1');
-  if(central?.ready&&Array.isArray(central.records)) await setJson('scanner-central-cache-v1',central);
+  if(central?.ready&&Array.isArray(central.records)){
+    const shortMap=job.records||{};
+    const mergedRecords=central.records.map(row=>{
+      const ticker=String(row?.ticker||'').toUpperCase();
+      const b=shortMap[ticker];
+      if(!b)return row;
+      const shares=finite(b.shares), fee=finite(b.fee), ff=finite(b.freeFloat??b.free_float);
+      const retainedFloat=ff!==null?ff:finite(row.freeFloat??row.free_float);
+      return {...row,
+        shortShares:shares,
+        borrowFee:fee,
+        freeFloat:retainedFloat,
+        free_float:retainedFloat,
+        shortDataState:(shares!==null&&fee!==null)?'ready':(row.shortDataState||'unavailable'),
+        shortDataSource:b.source||row.shortDataSource||null,
+        shortDataUpdatedAt:b.updatedAt||row.shortDataUpdatedAt||null,
+        freeFloatSource:ff!==null?(b.freeFloatSource||b.source||null):(row.freeFloatSource||null),
+        freeFloatUpdatedAt:ff!==null?(b.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null)
+      };
+    });
+    const merged={...central,records:mergedRecords,borrowUpdatedAt:stamp,shortUpdatedAt:stamp,updatedAt:central.updatedAt||stamp};
+    await setJson('scanner-cache-v1',merged);
+    await setJson('scanner-central-cache-v1',merged);
+    await setJson('scanner-cache-pointer-v2',{version:2,key:'scanner-cache-v1',updatedAt:merged.updatedAt,records:mergedRecords.length,shortUpdatedAt:stamp});
+  }
   await setJson('trigger_short_update',{trigger:false,status:'complete',clearedAt:stamp,source:job.triggerSource||'external-worker',jobId:job.jobId});
   await setJson(STATUS_KEY,{state:'ready',jobId:job.jobId,startedAt:job.startedAt,finishedAt:stamp,error:null,total:job.total,done:job.total,attempts:job.attempted,successful:doneUnique,failed:Math.max(0,job.total-doneUnique),records:Object.keys(job.records).length,phase:'complete',timeoutMs:TIMEOUT_MS,publishedAt:stamp,mode:'external-github-actions',worker:'github-actions'});
   await store.delete(JOB_KEY).catch(()=>{});

@@ -2,19 +2,23 @@ import crypto from "node:crypto";
 
 // Supabase is the single persistent data store for the application.
 // Netlify Blobs is intentionally not used anywhere in the project.
-const SUPABASE_URL=()=>{
-  let u=String(process.env.SUPABASE_URL||"").trim().replace(/\/+$/,"");
-  u=u.replace(/\/rest\/v1$/i,"");
-  return u;
-};
+const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||"").trim().replace(/\/$/,"");
 const SUPABASE_KEY=()=>String(process.env.SUPABASE_KEY||"").trim();
-const SUPABASE_TABLE=()=>String(process.env.SUPABASE_TABLE||"scanner_worker_store").trim();
+const TABLES={
+  scanner:String(process.env.SUPABASE_SCANNER_TABLE||process.env.SUPABASE_TABLE||"scanner_worker_store").trim(),
+  users:String(process.env.SUPABASE_USERS_TABLE||"app_users_store").trim(),
+  sessions:String(process.env.SUPABASE_SESSIONS_TABLE||"app_sessions_store").trim(),
+  requests:String(process.env.SUPABASE_REQUESTS_TABLE||"app_requests_store").trim(),
+  favorites:String(process.env.SUPABASE_FAVORITES_TABLE||"app_favorites_store").trim(),
+  userSettings:String(process.env.SUPABASE_USER_SETTINGS_TABLE||"app_user_settings_store").trim(),
+  siteSettings:String(process.env.SUPABASE_SITE_SETTINGS_TABLE||"app_site_settings_store").trim(),
+  attachments:String(process.env.SUPABASE_ATTACHMENTS_TABLE||"app_attachments_store").trim()
+};
 
 function requireSupabase(){
-  const url=SUPABASE_URL(), key=SUPABASE_KEY(), table=SUPABASE_TABLE();
+  const url=SUPABASE_URL(), key=SUPABASE_KEY();
   if(!url||!key) throw new Error("SUPABASE_URL و SUPABASE_KEY غير مهيئين في Netlify.");
-  if(!table) throw new Error("SUPABASE_TABLE غير صالح.");
-  return {url,key,table};
+  return {url,key};
 }
 function enc(v){return encodeURIComponent(String(v));}
 async function supabaseRequest(path,options={}){
@@ -29,19 +33,17 @@ async function supabaseRequest(path,options={}){
   try{return JSON.parse(body);}catch{return body;}
 }
 
-export function getDataStore(){
-  const {table}=requireSupabase();
-  const path=encodeURIComponent(table);
+function makeStore(table){
+  const safe=String(table||"").trim();
+  if(!safe) throw new Error("اسم جدول Supabase غير صالح.");
+  const path=encodeURIComponent(safe);
   return {
     async get(key,options={}){
       const rows=await supabaseRequest(`${path}?select=value&key=eq.${enc(key)}&limit=1`);
       const raw=rows?.[0]?.value;
       if(raw==null)return null;
       if(options.type==="arrayBuffer"){
-        if(raw?.__scanner_binary_base64){
-          const b=Buffer.from(String(raw.__scanner_binary_base64),"base64");
-          return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength);
-        }
+        if(raw?.__scanner_binary_base64){const b=Buffer.from(String(raw.__scanner_binary_base64),"base64");return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength);}
         return null;
       }
       if(options.type==="text") return typeof raw==="string"?raw:JSON.stringify(raw);
@@ -62,6 +64,14 @@ export function getDataStore(){
     async delete(key){await supabaseRequest(`${path}?key=eq.${enc(key)}`,{method:"DELETE"});}
   };
 }
+export const getDataStore=()=>makeStore(TABLES.scanner);
+export const getUserStore=()=>makeStore(TABLES.users);
+export const getSessionStore=()=>makeStore(TABLES.sessions);
+export const getRequestStore=()=>makeStore(TABLES.requests);
+export const getFavoriteStore=()=>makeStore(TABLES.favorites);
+export const getUserSettingsStore=()=>makeStore(TABLES.userSettings);
+export const getSiteSettingsStore=()=>makeStore(TABLES.siteSettings);
+export const getAttachmentStore=()=>makeStore(TABLES.attachments);
 
 export function json(data,status=200,extra={}) {
   const headers = {"content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...extra};
@@ -104,16 +114,15 @@ export function randomToken(){return crypto.randomBytes(32).toString("hex");}
 
 export function deviceFrom(request){return request.headers.get("x-device-id")||"";}
 
-export async function getUsers(){ return await getDataStore().get("users",{type:"json"}) || {}; }
-export async function saveUsers(u){ await getDataStore().setJSON("users",u); }
-export async function getRequests(){ return await getDataStore().get("requests",{type:"json"}) || []; }
-export async function saveRequests(r){ await getDataStore().setJSON("requests",r); }
-
-export async function getFavorites(email){ return await getDataStore().get(`favorites:${String(email||"").toLowerCase()}`,{type:"json"}) || []; }
-export async function saveFavorites(email,items){ await getDataStore().setJSON(`favorites:${String(email||"").toLowerCase()}`,items); }
+export async function getUsers(){ return await getUserStore().get("users",{type:"json"}) || {}; }
+export async function saveUsers(u){ await getUserStore().setJSON("users",u); }
+export async function getRequests(){ return await getRequestStore().get("requests",{type:"json"}) || []; }
+export async function saveRequests(r){ await getRequestStore().setJSON("requests",r); }
+export async function getFavorites(email){ return await getFavoriteStore().get(`favorites:${String(email||"").toLowerCase()}`,{type:"json"}) || []; }
+export async function saveFavorites(email,items){ await getFavoriteStore().setJSON(`favorites:${String(email||"").toLowerCase()}`,items); }
 
 export async function getSiteSettings(){
-  const d=await getDataStore().get("site-settings",{type:"json"});
+  const d=await getSiteSettingsStore().get("site-settings",{type:"json"});
   const legacy=[
     {id:"monthly",label:String(d?.monthlyLabel||"شهري"),price:Number.isFinite(Number(d?.monthlyPrice))?Number(d.monthlyPrice):59,days:Number.isFinite(Number(d?.monthlyDays))?Math.max(1,Number(d.monthlyDays)):30},
     {id:"yearly",label:String(d?.yearlyLabel||"سنوي"),price:Number.isFinite(Number(d?.yearlyPrice))?Number(d.yearlyPrice):499,days:Number.isFinite(Number(d?.yearlyDays))?Math.max(1,Number(d.yearlyDays)):365}
@@ -159,14 +168,14 @@ export async function saveSiteSettings(s){
     auto_update_enabled:s?.auto_update_enabled!==undefined ? Boolean(s.auto_update_enabled) : (s?.autoUpdateEnabled!==undefined ? Boolean(s.autoUpdateEnabled) : Boolean(old.auto_update_enabled ?? old.autoUpdateEnabled)),
     updatedAt:new Date().toISOString()
   };
-  await getDataStore().setJSON("site-settings",out);
+  await getSiteSettingsStore().setJSON("site-settings",out);
   return out;
 }
 
 export async function currentUser(request){
   const token=cookieMap(request).scanner_session;
   if(!token) return null;
-  const s=await getDataStore().get(`session:${token}`,{type:"json"});
+  const s=await getSessionStore().get(`session:${token}`,{type:"json"});
   if(!s || !s.email || (s.expiresAt && Date.now()>new Date(s.expiresAt).getTime())) return null;
   const users=await getUsers(), u=users[s.email];
   if(!u || u.status!=="active") return null;

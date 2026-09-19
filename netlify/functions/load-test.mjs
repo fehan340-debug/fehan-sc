@@ -1,4 +1,4 @@
-import { json, cookieMap, currentUser, getDataStore, randomToken, ensureAdmin, getFavorites } from "../../lib.js";
+import { json, cookieMap, currentUser, getDataStore, getSessionStore, randomToken, ensureAdmin, getFavorites } from "../../lib.js";
 
 const MAX_USERS = 500;
 const MAX_ROUNDS = 10;
@@ -26,6 +26,7 @@ export default async function(request){
     // even though the backend itself is healthy. For this test, execute the same
     // backend reads directly inside this Function, with a separate session per user.
     const store = getDataStore();
+    const sessionStore = getSessionStore();
     const sessionTokens = [];
 
     const sessionData = [];
@@ -36,7 +37,7 @@ export default async function(request){
     }
     for(let start=0; start<sessionData.length; start+=50){
       const batch=sessionData.slice(start,start+50);
-      await Promise.all(batch.map(x=>store.setJSON(`session:${x.token}`,x.value)));
+      await Promise.all(batch.map(x=>sessionStore.setJSON(`session:${x.token}`,x.value)));
     }
 
     function reqFor(token){ return new Request('https://load-test.internal/', {headers:{cookie:cookieHeader(token),'x-load-test':'1'}}); }
@@ -108,7 +109,7 @@ export default async function(request){
         roundsOut.push({round,users,ok,fail,c429,c5xx,firstFailure:failed?JSON.stringify(failed.steps):null});
       }
     } finally {
-      await Promise.all(sessionTokens.map(t=>store.delete(`session:${t}`).catch(()=>{})));
+      await Promise.all(sessionTokens.map(t=>sessionStore.delete(`session:${t}`).catch(()=>{})));
       await Promise.all(sessionTokens.map(t=>store.delete(`loadtest-session:${t}`).catch(()=>{})));
     }
 
