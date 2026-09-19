@@ -19,7 +19,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -39,5 +39,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_TABLE: scanner_worker_store
+          FORCE_SHORT_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
           FORCE_SHORT_RUN: true
         run: node worker/short-worker.mjs
