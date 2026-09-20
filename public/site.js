@@ -357,48 +357,44 @@ async function runFavoriteTest(f,tr){
  const btn=tr?.querySelector('.favTest');if(btn)btn.disabled=true;
  showTestLoading(f);
  try{
-   setStatus?.("جاري البحث...");
-   const end=new Date(), from=new Date(end.getTime()-370*86400000);
-   await loadScannerCache();
-   const cached=cacheFind(f);
-   const borrowTest=getBorrowFromCache(cached);
-   const daily=await getBars(f.ticker,iso(from),iso(end),"fresh-test");
-   if(!daily.length)throw Error('لا توجد بيانات يومية حديثة للاختبار.');
-   const four=await getBars4H(f.ticker, f.splitDate||iso(from), iso(end), "fresh-test");
-   const valid=daily.filter(b=>['o','h','l','c'].every(k=>Number.isFinite(Number(b[k]))));
-   const current=Number(valid.at(-1)?.c);
-   const splitDate=f.splitDate||'';
-   const split=valid.find(b=>dateFromBar(b)===splitDate);
-   const splitOpen=Number(split?.o);
-   let low=Infinity,lowDate=null;
-   for(const b of valid){const d=dateFromBar(b),v=Number(b.l);if(d&&d>=splitDate&&Number.isFinite(v)&&v<low){low=v;lowDate=d;}}
-   const tradingAfter=d=>[...new Set(valid.map(dateFromBar).filter(Boolean))].filter(x=>x>d).length;
-   let low4=Infinity,low4Date=null;
-   for(const b of four){const d=dateFromBar(b),v=Number(b.l);if(d&&d>=splitDate&&Number.isFinite(v)&&v<low4){low4=v;low4Date=d;}}
-   const high52=Math.max(...valid.slice(-252).map(b=>Number(b.h)).filter(Number.isFinite));
-   const low52=Math.min(...valid.slice(-252).map(b=>Number(b.l)).filter(Number.isFinite));
-   const fourDays=low4Date?tradingAfter(low4Date):null;
-   const sinceLow=lowDate?tradingAfter(lowDate):null;
-   const daysSinceSplit=tradingAfter(splitDate);
+   // Test uses only the already-loaded scanner snapshot. Never make a new
+   // browser request here: Netlify Access can return an HTML Login Redirect
+   // (HTTP 401), and the test is supposed to be instant and cache-only.
+   const x=cacheFind(f);
+   if(!x) throw Error('بيانات هذا السهم غير موجودة في الكاش الحالي.');
+   const current=Number(displayPrice(x));
+   const splitOpen=Number(x.splitOpen);
+   const target=Number.isFinite(splitOpen)?splitOpen*(1-Number($('drop').value||0)/100):NaN;
    const rows=[
     ['السعر الحالي',Number.isFinite(current)?'$'+fmt(current):'غير متاح'],
-    ['MA 5 — يومي',valid.length>=5?'$'+fmt(valid.slice(-5).reduce((a,b)=>a+Number(b.c),0)/5):'غير متاح'],
-    ['MA 20 — يومي',valid.length>=20?'$'+fmt(valid.slice(-20).reduce((a,b)=>a+Number(b.c),0)/20):'غير متاح'],
-    ['EMA 20 — يومي',valid.length>=20?'$'+fmt(emaSeries(valid.map(b=>Number(b.c)),20).at(-1)):'غير متاح'],
-    ['EMA 50 — يومي',valid.length>=50?'$'+fmt(emaSeries(valid.map(b=>Number(b.c)),50).at(-1)):'غير متاح'],
-    ['CCI — يومي (14)',valid.length>=14?fmt(cciValue(valid,14)):'غير متاح'],
-    ['قاع 4H',Number.isFinite(low4)?'$'+fmt(low4):'غير متاح'],['تاريخ قاع 4H',low4Date||'غير متاح'],
-    ['مضى على قاع 4H',Number.isFinite(fourDays)?fourDays+' يوم تداول':'غير متاح'],
-    ['البعد عن قاع 4H',Number.isFinite(current)&&Number.isFinite(low4)?fmt((current-low4)/low4*100)+'%':'غير متاح'],
-    ['مضى على التقسيم',Number.isFinite(daysSinceSplit)?daysSinceSplit+' يوم تداول':'غير متاح'],
-    ['مضى على القاع اليومي',Number.isFinite(sinceLow)?sinceLow+' يوم تداول':'غير متاح'],
-    ['أعلى سعر 52 أسبوعًا',Number.isFinite(high52)?'$'+fmt(high52):'غير متاح'],
-    ['أدنى سعر 52 أسبوعًا',Number.isFinite(low52)?'$'+fmt(low52):'غير متاح'],
-    ['Free Float',Number.isFinite(Number(borrowTest.freeFloat))?Number(borrowTest.freeFloat).toLocaleString():'غير متاح']
+    ['MA 5 — يومي',Number.isFinite(Number(x.ma5))?'$'+fmt(x.ma5):'غير متاح'],
+    ['MA 20 — يومي',Number.isFinite(Number(x.ma20))?'$'+fmt(x.ma20):'غير متاح'],
+    ['EMA 20 — يومي',Number.isFinite(Number(x.ema20))?'$'+fmt(x.ema20):'غير متاح'],
+    ['EMA 50 — يومي',Number.isFinite(Number(x.ema50))?'$'+fmt(x.ema50):'غير متاح'],
+    ['CCI — يومي (14)',Number.isFinite(Number(x.cci))?fmt(x.cci):'غير متاح'],
+    ['قاع 4H',Number.isFinite(Number(x.low4h))?'$'+fmt(x.low4h):'غير متاح'],
+    ['تاريخ قاع 4H',x.low4hDate||'غير متاح'],
+    ['مضى على قاع 4H',Number.isFinite(Number(x.low4hDays))?Number(x.low4hDays)+' يوم تداول':'غير متاح'],
+    ['البعد عن قاع 4H',Number.isFinite(current)&&Number.isFinite(Number(x.low4h))&&Number(x.low4h)!==0?fmt((current-Number(x.low4h))/Number(x.low4h)*100)+'%':'غير متاح'],
+    ['مضى على التقسيم',Number.isFinite(Number(x.sinceSplit))?Number(x.sinceSplit)+' يوم تداول':'غير متاح'],
+    ['مضى على القاع اليومي',Number.isFinite(Number(x.sinceLow))?Number(x.sinceLow)+' يوم تداول':'غير متاح'],
+    ['أعلى سعر 52 أسبوعًا',Number.isFinite(Number(x.high52))?'$'+fmt(x.high52):'غير متاح'],
+    ['أدنى سعر 52 أسبوعًا',Number.isFinite(Number(x.low52))?'$'+fmt(x.low52):'غير متاح'],
+    ['Free Float',Number.isFinite(Number(x.freeFloat))?Number(x.freeFloat).toLocaleString():'غير متاح'],
+    ['IBKR Available Shares',Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'غير متاح'],
+    ['IBKR Borrow Fee',Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'غير متاح'],
+    ['تاريخ تحديث البيانات',x.updatedAt?new Date(x.updatedAt).toLocaleString('ar-SA'):'غير متاح']
    ];
-   $('testTitle').textContent='اختبار السهم — '+f.ticker;$('testRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');$('testNote').textContent='تمت إعادة سحب البيانات وإعادة الحساب من جديد للاختبار.';$('testModal').classList.add('show');
- }catch(e){$("testRows").innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر الاختبار')+'</span></div>';$("testNote").textContent='تعذر إكمال الاختبار.';}finally{if(btn)btn.disabled=false;}
+   $('testTitle').textContent='اختبار السهم — '+x.ticker;
+   $('testRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');
+   $('testNote').textContent='تم الاختبار من الكاش الجاهز — بدون طلب API جديد.';
+   $('testModal').classList.add('show');
+ }catch(e){
+   $('testRows').innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر الاختبار')+'</span></div>';
+   $('testNote').textContent='تعذر إكمال الاختبار.';
+ }finally{if(btn)btn.disabled=false;}
 }
+
 async function runFavoriteDetails(f,tr){
  const btn=tr?.querySelector('.favDetails');if(btn)btn.disabled=true;
  showDetailsLoading(f);

@@ -267,7 +267,7 @@ export async function fetchFreeFloat(symbol, exchange='XNAS', options={}) {
   const prefixes={XNAS:'nasdaq',XNYS:'nyse',XASE:'nyseamerican'};
   const prefix=prefixes[String(exchange||'XNAS').toUpperCase()]||'nasdaq';
   const target=`${CE}/symbol/${prefix}-${encodeURIComponent(upper.toLowerCase())}/`;
-  const attempts=[{render:'false'},{render:'false',ultra_premium:'true'}];
+  const attempts=[{render:'false',premium:'true',country_code:'us',device_type:'desktop'},{render:'false',premium:'true',country_code:'us',device_type:'mobile'}];
   for(const extra of attempts){
     const qs=new URLSearchParams({api_key:scraperKey,url:target,country_code:'us',render:'false',...extra});
     try{
@@ -343,7 +343,7 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
     });
 
     const candidates = [bodyText, ...chunks];
-    const freeFloat = extractFreeFloatFromChartExchange($, bodyText, chunks, rawHtml);
+    const freeFloat = extractFloatShares(rawHtml);
     const patterns = [
       /(?:there were\s+)?([0-9.,]+\s*[KMBT]?)\s+shares\s+available\s+with\s+a\s+fee\s+of\s+([0-9.,]+)\s*%/i,
       /([0-9.,]+\s*[KMBT]?)\s+shares\s+available[^%]{0,250}?(?:fee|rate|ctb)[^0-9]{0,40}([0-9.,]+)\s*%/i,
@@ -416,25 +416,32 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
       last = { status:0, preview:String(e?.message || e), scraperOptions:options };
     }
   }
-  const ff=await fetchFreeFloat(upper,ex,{signal:externalSignal}).catch(e=>{ if(e?.name==='AbortError') throw e; return null; });
-  if(ff!=null) return {ok:true,shares:null,fee:null,freeFloat:ff,free_float:ff,source:'scraperapi-chartexchange-float-selector',status:last?.status??0,scraperOptions:last?.scraperOptions||null};
-
-  // Keep the failure actionable in GitHub Actions. The worker historically
-  // logged only `scrape-no-borrow-data`, which made it impossible to tell
-  // whether ScraperAPI returned ChartExchange HTML, a block/challenge page,
-  // JSON, or an HTTP error. Include a short sanitized preview in the reason.
-  const diagnosticPreview = String(last?.preview || '')
-    .replace(/\s+/g, ' ')
-    .replace(/(?:api_key|key|token|authorization)=?[^&\s]+/gi, '$1=[redacted]')
-    .slice(0, 650);
-  const diagnosticStatus = Number(last?.status || 0);
-  return {
-    ok:false,
-    reason:`scrape-no-borrow-data (HTTP ${diagnosticStatus || 'unknown'})${diagnosticPreview ? `: ${diagnosticPreview}` : ''}`,
-    status:diagnosticStatus,
-    responsePreview:diagnosticPreview,
-    scraperOptions:last?.scraperOptions || null
-  };
+  // Final server-side fallback: ChartExchange's public HTML page. This still
+  // uses ChartExchange as the source of truth and never exposes an upstream key
+  // to the browser. ScraperAPI remains the primary route.
+  try {
+    const pub = await borrowFromPublicPage(upper, ex);
+    const ff = await fetchFreeFloat(upper, ex, {signal: externalSignal}).catch(e=>{
+      if(e?.name==='AbortError') throw e;
+      return null;
+    });
+    if(pub || ff != null) {
+      return {
+        ok:true,
+        shares:pub?.shares ?? null,
+        fee:pub?.fee ?? null,
+        freeFloat:ff,
+        free_float:ff,
+        source:pub ? 'chartexchange-public-html-fallback' : 'scraperapi-chartexchange-float-selector',
+        status:last?.status ?? 0,
+        scraperOptions:last?.scraperOptions || null
+      };
+    }
+  } catch (e) {
+    if(e?.name==='AbortError') throw e;
+    console.warn('[chartexchange] public fallback failed',{symbol:upper,exchange:ex,error:String(e?.message||e)});
+  }
+  return { ok:false, reason:'scrape-no-borrow-data', status:last?.status ?? 0, responsePreview:last?.preview || '', scraperOptions:last?.scraperOptions || null };
 }
 
 async function borrowFromApi(symbol, key) {
