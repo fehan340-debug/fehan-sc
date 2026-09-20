@@ -413,23 +413,21 @@ function stopFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);favoriteR
 
 async function loadIPOs(){
   const days=Math.max(1,Math.min(30,Number($('ipoDays').value)||7)); const ex=$('ipoExchange').value;
-  $('ipoRefresh').disabled=true; $('ipoStatus').textContent='جاري جلب بيانات الاكتتابات...'; $('ipoResults').innerHTML='';
+  $('ipoRefresh').disabled=true; $('ipoStatus').textContent='جاري البحث...'; $('ipoResults').innerHTML='';
   try{
-    const r=await apiFetch('/.netlify/functions/scanner-ipo');
-    const d=await responseJSON(r);
-    if(!r.ok)throw Error(d?.error||'تعذر تحميل كاش الاكتتابات.');
-    if(!d?.ready)throw Error('بيانات الاكتتابات غير جاهزة بعد.');
+    if(!Array.isArray(scannerIPOs)||!scannerCache) await loadScannerCache({wait:true});
     const today=new Date(); today.setHours(0,0,0,0);
     const end=new Date(today.getTime()+days*86400000);
-    let rows=(Array.isArray(d.ipos)?d.ipos:scannerIPOs).filter(x=>{
+    let rows=(Array.isArray(scannerIPOs)?scannerIPOs:[]).filter(x=>{
       const dt=new Date(String(x.listing_date||'')+'T00:00:00');
       if(!Number.isFinite(dt.getTime()))return false;
       return dt>=today&&dt<=end&&(ex==='ALL'||x.primary_exchange===ex);
     }).sort((a,b)=>String(a.listing_date).localeCompare(String(b.listing_date)));
-    if(!rows.length){$('ipoStatus').textContent=`لا توجد اكتتابات مؤكدة خلال ${days} أيام. آخر تحديث للبيانات: ${d.ipoUpdatedAt?new Date(d.ipoUpdatedAt).toLocaleString('ar-SA'):(d.updatedAt?new Date(d.updatedAt).toLocaleString('ar-SA'):'غير متوفر')}.`;return;}
+    if(!rows.length){$('ipoStatus').textContent=`لا توجد اكتتابات مؤكدة خلال ${days} أيام. آخر تحديث للبيانات: ${scannerCacheUpdatedAt?new Date(scannerCacheUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;return;}
     $('ipoResults').innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.issuer_name||x.security_description||'—')}</td><td>${escapeHtml(x.listing_date||'—')}</td><td>${Number(x.max_shares_offered||x.min_shares_offered||0)?Number(x.max_shares_offered||x.min_shares_offered).toLocaleString():'—'}</td><td>${x.lowest_offer_price!=null||x.highest_offer_price!=null?`$${fmt(x.lowest_offer_price)} — $${fmt(x.highest_offer_price)}`:'—'}</td><td>${x.total_offer_size!=null?Number(x.total_offer_size).toLocaleString():'—'}</td></tr>`).join('');
-    $('ipoStatus').textContent=`تم العثور على ${rows.length} اكتتاب${rows.length===1?'':'ات'} — آخر تحديث للبيانات: ${d.ipoUpdatedAt?new Date(d.ipoUpdatedAt).toLocaleString('ar-SA'):(d.updatedAt?new Date(d.updatedAt).toLocaleString('ar-SA'):'غير متوفر')}`;
-  }catch(e){$('ipoStatus').textContent='تعذر جلب بيانات الاكتتابات: '+(e.message||'خطأ غير معروف');}
+    const stamp= scannerCacheUpdatedAt?new Date(scannerCacheUpdatedAt).toLocaleString('ar-SA'):'غير متوفر';
+    $('ipoStatus').textContent=`تم العثور على ${rows.length} اكتتاب${rows.length===1?'':'ات'} — آخر Snapshot: ${stamp}`;
+  }catch(e){$('ipoStatus').textContent='تعذر عرض بيانات الاكتتابات من الـSnapshot: '+(e.message||'خطأ غير معروف');}
   finally{$('ipoRefresh').disabled=false;}
 }
 $("ipoRefresh").onclick=loadIPOs;

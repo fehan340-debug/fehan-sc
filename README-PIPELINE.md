@@ -26,3 +26,8 @@ The short scraper is now externalized to GitHub Actions. Netlify Functions only 
 
 ## Hourly central snapshot
 The hourly scanner publishes the complete scanner snapshot (Massive split/technical/current data + Short/borrow/free-float + IPO records) to Supabase under key `scanner-central-cache-v1` after publishing the compressed Netlify serving bundle. Set `SUPABASE_URL` and a server-side `SUPABASE_KEY` in Netlify as well as GitHub Actions. The automatic schedule is Mon-Fri, with an America/New_York guard for 04:00-20:00; minute 40 runs the main refresh and minute 50 triggers the external short worker.
+
+
+## Daily prepared snapshots
+- IPO data is refreshed once per weekday by `scanner-ipo-daily-schedule` and embedded into the next published scanner snapshot. The browser does not query the IPO store directly.
+- Free Float is fetched from Finviz once per America/New_York calendar day, only after the ChartExchange short pass completes. Repeated hourly short runs reuse the stored float and do not call Finviz again that day.

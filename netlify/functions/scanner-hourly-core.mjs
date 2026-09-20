@@ -3,7 +3,7 @@ import { getDataStore } from '../../lib.js';
 import { getUniverse } from './scanner-universe-core.mjs';
 import { readBorrowCache } from './scanner-borrow-core.mjs';
 import { writeDataBundle, readDataBundle } from './scanner-data-bundle.mjs';
-import { refreshIpoCache, readIpoCache } from './scanner-ipo-core.mjs';
+import { readIpoCache } from './scanner-ipo-core.mjs';
 
 const MASSIVE='https://api.massive.com';
 const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||'').trim().replace(/\/+$/,'').replace(/\/rest\/v1$/i,'');
@@ -198,13 +198,7 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     finalRows=validRows;
     const publishedAt=new Date().toISOString();
     const versionKey=`scanner-cache-data-v2:${jobId}`;
-    let ipoCache=null;
-    try{
-      ipoCache=await refreshIpoCache();
-    }catch(e){
-      console.warn('[hourly-refresh] fresh IPO refresh failed; retaining last valid IPO cache',String(e?.message||e));
-      ipoCache=await readIpoCache();
-    }
+    const ipoCache=await readIpoCache();
     const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-direct-html-fresh',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
     await store.setJSON(versionKey,payload);
     await writeDataBundle(payload);

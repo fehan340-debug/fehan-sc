@@ -343,7 +343,7 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
     });
 
     const candidates = [bodyText, ...chunks];
-    const freeFloat = extractFloatShares(rawHtml);
+    const freeFloat = null;
     const patterns = [
       /(?:there were\s+)?([0-9.,]+\s*[KMBT]?)\s+shares\s+available\s+with\s+a\s+fee\s+of\s+([0-9.,]+)\s*%/i,
       /([0-9.,]+\s*[KMBT]?)\s+shares\s+available[^%]{0,250}?(?:fee|rate|ctb)[^0-9]{0,40}([0-9.,]+)\s*%/i,
@@ -357,7 +357,7 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
         if (!m) continue;
         const shares = num(m[1]);
         const fee = num(m[2]);
-        if (shares != null || fee != null || freeFloat != null) return { shares, fee, freeFloat };
+        if (shares != null || fee != null) return { shares, fee, freeFloat: null };
       }
     }
 
@@ -378,7 +378,7 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
         if (/(borrow.*fee|fee.*(percent|rate)|ctb)/i.test(key)) fee = num(value);
       }
     });
-    if (shares != null || fee != null || freeFloat != null) return { shares, fee, freeFloat };
+    if (shares != null || fee != null) return { shares, fee, freeFloat: null };
     return null;
   };
 
@@ -398,16 +398,14 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
       if (!r.ok) continue;
       const found = parse(r.text);
       if (found) {
-        let ff=found.freeFloat ?? null;
-        if(ff==null) ff=await fetchFreeFloat(upper,ex,{signal:externalSignal}).catch(e=>{ if(e?.name==='AbortError') throw e; return null; });
-        console.info('[chartexchange] parsed sample', { symbol: upper, exchange: ex, shares: found.shares ?? null, fee: found.fee ?? null, freeFloat: ff, scraperOptions: options });
+        console.info('[chartexchange] parsed short sample', { symbol: upper, exchange: ex, shares: found.shares ?? null, fee: found.fee ?? null, scraperOptions: options });
         return {
           ok:true,
           shares:found.shares ?? null,
           fee:found.fee ?? null,
-          freeFloat:ff,
-          free_float:ff,
-          source:ff!=null?'scraperapi-chartexchange-direct-html+float-selector':'scraperapi-chartexchange-direct-html',
+          freeFloat:null,
+          free_float:null,
+          source:'scraperapi-chartexchange-direct-html',
           status:r.status,
           scraperOptions:options
         };
@@ -421,18 +419,14 @@ async function borrowFromScraperAPI(symbol, exchange, options = {}) {
   // to the browser. ScraperAPI remains the primary route.
   try {
     const pub = await borrowFromPublicPage(upper, ex);
-    const ff = await fetchFreeFloat(upper, ex, {signal: externalSignal}).catch(e=>{
-      if(e?.name==='AbortError') throw e;
-      return null;
-    });
-    if(pub || ff != null) {
+    if(pub) {
       return {
         ok:true,
         shares:pub?.shares ?? null,
         fee:pub?.fee ?? null,
-        freeFloat:ff,
-        free_float:ff,
-        source:pub ? 'chartexchange-public-html-fallback' : 'scraperapi-chartexchange-float-selector',
+        freeFloat:null,
+        free_float:null,
+        source:'chartexchange-public-html-fallback',
         status:last?.status ?? 0,
         scraperOptions:last?.scraperOptions || null
       };

@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
 import { store } from './store.mjs';
 import { borrowFromScraperAPI } from '../netlify/functions/chartexchange.mjs';
+import { fetchFinvizStockInfo } from './finviz.mjs';
 
 const JOB_KEY='scanner-borrow-job-v4';
 const STATUS_KEY='scanner-borrow-status';
 const TRIGGER_KEY='trigger_short_update';
-const TIMEOUT_MS=10000;
-const ENGINE_VERSION=7;
+const TIMEOUT_MS=15000;
+const ENGINE_VERSION=8;
 const finite=n=>Number.isFinite(Number(n))?Number(n):null;
 
 async function getJson(key){return await store.get(key);}
@@ -31,7 +32,12 @@ async function instantPublish(ticker,b,stamp){
       shortDataSource:b?.source||null,
       shortDataUpdatedAt:b?.updatedAt||stamp,
       freeFloatSource:ff!==null?(b?.freeFloatSource||b?.source||null):(row.freeFloatSource||null),
-      freeFloatUpdatedAt:ff!==null?(b?.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null)
+      freeFloatUpdatedAt:ff!==null?(b?.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null),
+      finvizPrice:b?.finvizPrice!=null?b.finvizPrice:row.finvizPrice,
+      finvizPreMarketPrice:b?.finvizPreMarketPrice!=null?b.finvizPreMarketPrice:row.finvizPreMarketPrice,
+      finvizAfterHoursPrice:b?.finvizAfterHoursPrice!=null?b.finvizAfterHoursPrice:row.finvizAfterHoursPrice,
+      finvizPriceUpdatedAt:b?.finvizPriceUpdatedAt||row.finvizPriceUpdatedAt||null,
+      finvizSource:b?.finvizSource||row.finvizSource||null
     };
   });
   const payload={...base,records:rows,borrowUpdatedAt:stamp,updatedAt:stamp};
@@ -74,7 +80,12 @@ async function finish(job,stamp){
         shortDataSource:b.source||row.shortDataSource||null,
         shortDataUpdatedAt:b.updatedAt||row.shortDataUpdatedAt||null,
         freeFloatSource:ff!==null?(b.freeFloatSource||b.source||null):(row.freeFloatSource||null),
-        freeFloatUpdatedAt:ff!==null?(b.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null)
+        freeFloatUpdatedAt:ff!==null?(b.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null),
+        finvizPrice:b.finvizPrice!=null?b.finvizPrice:row.finvizPrice,
+        finvizPreMarketPrice:b.finvizPreMarketPrice!=null?b.finvizPreMarketPrice:row.finvizPreMarketPrice,
+        finvizAfterHoursPrice:b.finvizAfterHoursPrice!=null?b.finvizAfterHoursPrice:row.finvizAfterHoursPrice,
+        finvizPriceUpdatedAt:b.finvizPriceUpdatedAt||row.finvizPriceUpdatedAt||null,
+        finvizSource:b.finvizSource||row.finvizSource||null
       };
     });
     const merged={...central,records:mergedRecords,borrowUpdatedAt:stamp,shortUpdatedAt:stamp,updatedAt:central.updatedAt||stamp};
@@ -108,46 +119,109 @@ async function createJob(trigger){
 async function processTicker(job,ticker){
   const exchange=String(job.exchangeByTicker?.[ticker]||'').toUpperCase();
   const old=job.records[ticker]||{};
-  let value=null,resultOk=false,error=null;
+  let value=null,shortOk=false,error=null;
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),TIMEOUT_MS);
   try{
     if(!supportedExchange(exchange))throw new Error('Missing supported exchange mapping');
-    const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),TIMEOUT_MS);
-    try{value=await borrowFromScraperAPI(ticker,exchange,{signal:controller.signal});}
-    finally{clearTimeout(timer);}
-    resultOk=Boolean(value&&(value.shares!=null||value.fee!=null||value.freeFloat!=null||value.free_float!=null));
-    if(!resultOk)error=value?.reason||'no-data';
-  }catch(e){error=e?.name==='AbortError'?'scraperapi-timeout':String(e?.message||e);}
+    // Phase 1: ChartExchange only. Free Float is deliberately NOT fetched here.
+    value=await borrowFromScraperAPI(ticker,exchange,{signal:controller.signal});
+    shortOk=Boolean(value&&(value.shares!=null||value.fee!=null));
+    if(!shortOk)error=value?.reason||'scrape-no-borrow-data';
+  }catch(e){
+    error=e?.name==='AbortError'?'scraperapi-timeout':String(e?.message||e);
+  }finally{clearTimeout(timer);}
+
   const stamp=new Date().toISOString();
   job.attempted++;
-  if(resultOk){
+  if(shortOk){
     job.successful++;
-    const freshFloat=finite(value?.freeFloat??value?.free_float);
-    const retainedFloat=freshFloat!==null?freshFloat:finite(old.freeFloat??old.free_float);
-    job.records[ticker]={shares:finite(value?.shares),fee:finite(value?.fee),freeFloat:retainedFloat,free_float:retainedFloat,freeFloatSource:freshFloat!==null?(value?.source||'chartexchange-direct-html'):(old.freeFloatSource||null),freeFloatUpdatedAt:freshFloat!==null?stamp:(old.freeFloatUpdatedAt||null),updatedAt:stamp,source:value?.source||'scraperapi-chartexchange-direct-html',state:'ready'};
+    const shares=finite(value?.shares), fee=finite(value?.fee);
+    job.records[ticker]={
+      ...old,
+      shares,fee,
+      freeFloat:finite(old.freeFloat??old.free_float),
+      free_float:finite(old.freeFloat??old.free_float),
+      freeFloatSource:old.freeFloatSource||null,
+      freeFloatUpdatedAt:old.freeFloatUpdatedAt||null,
+      updatedAt:stamp,
+      source:value?.source||'scraperapi-chartexchange-direct-html',
+      state:'ready',
+      shortDataSource:value?.source||'scraperapi-chartexchange-direct-html',
+      shortDataUpdatedAt:stamp,
+      lastError:null
+    };
   }else{
     job.failed++;
-    job.records[ticker]={shares:finite(old.shares),fee:finite(old.fee),freeFloat:finite(old.freeFloat??old.free_float),free_float:finite(old.freeFloat??old.free_float),freeFloatSource:old.freeFloatSource||null,freeFloatUpdatedAt:old.freeFloatUpdatedAt||null,updatedAt:old.updatedAt||null,source:old.source||'pending',state:(finite(old.shares)!==null||finite(old.fee)!==null)?'previous':'pending',lastError:error||'no-data'};
-    console.warn('[external-short-worker] ticker failed',{ticker,exchange,error});
+    job.records[ticker]={
+      ...old,
+      shares:finite(old.shares),fee:finite(old.fee),
+      freeFloat:finite(old.freeFloat??old.free_float),free_float:finite(old.freeFloat??old.free_float),
+      updatedAt:old.updatedAt||null,source:old.source||'pending',
+      state:(finite(old.shares)!==null||finite(old.fee)!==null)?'previous':'pending',
+      lastError:error||'no-data'
+    };
+    console.warn('[external-short-worker] ticker failed',{ticker,exchange,error,shortStatus:value?.status||null,shortPreview:value?.responsePreview||''});
   }
   job.cursor++;
   job.lastActivityAt=stamp;
-  // Durable per-ticker checkpoint in Supabase: one row/key per symbol.
-  // This means a completed ticker is saved immediately and does not depend on
-  // the 200-ticker batch finishing successfully.
-  await setJson(`scanner-short-record:${ticker}`, {
-    ticker,
-    exchange,
-    ...job.records[ticker],
-    jobId: job.jobId,
-    index: job.cursor,
-    total: job.total,
-    savedAt: stamp
-  });
+  await setJson(`scanner-short-record:${ticker}`, {ticker,exchange,...job.records[ticker],jobId:job.jobId,index:job.cursor,total:job.total,savedAt:stamp});
   await setJson(JOB_KEY,job);
-  const doneUnique=job.tickers.filter(t=>job.records[t]?.state==='ready').length;
-  await setJson(STATUS_KEY,{state:job.cursor>=job.total?'ready':'building',jobId:job.jobId,startedAt:job.startedAt,finishedAt:job.cursor>=job.total?stamp:null,error:null,total:job.total,done:job.cursor,attempts:job.attempted,successful:doneUnique,failed:job.failed,records:Object.keys(job.records).length,phase:job.cursor>=job.total?'complete':'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions',currentTicker:ticker,currentIndex:job.cursor,remaining:Math.max(0,job.total-job.cursor),lastTickerAt:stamp});
+  const doneUnique=job.tickers.filter(t=>['ready','previous'].includes(job.records[t]?.state)).length;
+  await setJson(STATUS_KEY,{state:job.cursor>=job.total?'ready':'building',jobId:job.jobId,startedAt:job.startedAt,finishedAt:job.cursor>=job.total?stamp:null,error:null,total:job.total,done:job.cursor,attempts:job.attempted,successful:doneUnique,failed:job.failed,records:Object.keys(job.records).length,phase:job.cursor>=job.total?'short-complete-awaiting-float':'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions',currentTicker:ticker,currentIndex:job.cursor,remaining:Math.max(0,job.total-job.cursor),lastTickerAt:stamp});
   return job.cursor>=job.total;
+}
+
+function easternDate(){
+  return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+}
+
+async function refreshDailyFinvizFloat(job){
+  const today=easternDate();
+  const marker=await getJson('scanner-finviz-float-daily-v1');
+  if(marker?.date===today && marker?.state==='ready'){
+    await setJson(STATUS_KEY,{state:'ready',jobId:job.jobId,startedAt:job.startedAt,finishedAt:new Date().toISOString(),error:null,total:job.total,done:job.total,attempts:job.attempted,successful:job.successful,failed:job.failed,records:Object.keys(job.records).length,phase:'daily-float-already-complete',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions',floatDate:today,floatUpdatedAt:marker.completedAt||null});
+    return marker;
+  }
+
+  const startedAt=new Date().toISOString();
+  await setJson('scanner-finviz-float-status-v1',{state:'building',date:today,startedAt,finishedAt:null,total:job.total,done:0,successful:0,failed:0});
+  let idx=0,successful=0,failed=0;
+  const tickers=job.tickers.slice();
+  const worker=async()=>{
+    while(true){
+      const i=idx++; if(i>=tickers.length)return;
+      const ticker=tickers[i];
+      const old=job.records[ticker]||{};
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),TIMEOUT_MS);
+      try{
+        const finviz=await fetchFinvizStockInfo(ticker,{signal:controller.signal});
+        const ff=finviz?.ok?finite(finviz.freeFloat):null;
+        if(ff!==null){
+          job.records[ticker]={...old,freeFloat:ff,free_float:ff,freeFloatSource:'finviz',freeFloatUpdatedAt:new Date().toISOString(),finvizSource:'finviz',state:old.state||'ready'};
+          successful++;
+          await setJson(`scanner-short-record:${ticker}`,{ticker,exchange:job.exchangeByTicker?.[ticker]||'',...job.records[ticker],jobId:job.jobId,index:i+1,total:job.total,savedAt:new Date().toISOString()});
+        }else{
+          failed++;
+          console.warn('[external-short-worker] finviz float failed',{ticker,status:finviz?.status||null,reason:finviz?.reason||'finviz-no-free-float'});
+        }
+      }catch(e){
+        failed++;
+        console.warn('[external-short-worker] finviz float exception',{ticker,error:e?.name==='AbortError'?'finviz-timeout':String(e?.message||e)});
+      }finally{clearTimeout(timer);}
+      if((i+1)===1||(i+1)%5===0||(i+1)===tickers.length){
+        await setJson('scanner-finviz-float-status-v1',{state:'building',date:today,startedAt,finishedAt:null,total:tickers.length,done:i+1,successful,failed,currentTicker:ticker,updatedAt:new Date().toISOString()});
+      }
+    }
+  };
+  // Keep Finviz separate from ChartExchange and lightly parallelized to avoid a very long daily run.
+  await Promise.all(Array.from({length:3},worker));
+  const completedAt=new Date().toISOString();
+  const markerOut={version:1,state:'ready',date:today,startedAt,completedAt,total:tickers.length,successful,failed,universeUpdatedAt:job.universeUpdatedAt||null,source:'finviz-daily'};
+  await setJson('scanner-finviz-float-daily-v1',markerOut);
+  await setJson('scanner-finviz-float-status-v1',markerOut);
+  return markerOut;
 }
 
 async function autoUpdatesEnabled(){
@@ -183,12 +257,13 @@ async function main(){
     if(stale)job={...job,active:false};
     job=await createJob(trigger);
   }
-  if(job.cursor>=job.total){await finish(job,new Date().toISOString());return;}
+  if(job.cursor>=job.total){await refreshDailyFinvizFloat(job);await finish(job,new Date().toISOString());return;}
   while(job.cursor<job.total){
     const ticker=job.tickers[job.cursor];
     const complete=await processTicker(job,ticker);
-    if(complete){await finish(job,new Date().toISOString());return;}
+    if(complete){await refreshDailyFinvizFloat(job);await finish(job,new Date().toISOString());return;}
   }
+  await refreshDailyFinvizFloat(job);
   await finish(job,new Date().toISOString());
 }
 
