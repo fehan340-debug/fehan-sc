@@ -26,6 +26,8 @@ revoke all on table public.scanner_worker_store from anon;
 revoke all on table public.scanner_worker_store from authenticated;
 grant all on table public.scanner_worker_store to service_role;
 
--- Each ticker is checkpointed immediately by the worker using keys like:
+-- Each ticker is checkpointed immediately by the worker using one stable primary key per symbol:
 -- scanner-short-record:AAPL, scanner-short-record:TSLA, etc.
--- This keeps each completed ticker durable even if the 200-ticker run stops midway.
+-- The worker uses an UPSERT (resolution=merge-duplicates), so an existing symbol updates
+-- its existing row and a new row is created only for a symbol not already present.
+-- This keeps each completed ticker durable even if a long run stops midway.

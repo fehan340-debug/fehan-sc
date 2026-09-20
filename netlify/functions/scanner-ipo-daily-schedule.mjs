@@ -4,6 +4,6 @@ export default async function(){const settings=await getSiteSettings();if(settin
   try{await refreshIpoCache();return new Response('ok',{status:200});}
   catch(e){console.error('daily IPO refresh failed',e);return new Response(String(e?.message||e),{status:500});}
 }
-export const config={schedule:'0 13 * * 1-5'};
+export const config={schedule:'0 13 * * *'};
 // One daily refresh. The hourly scanner only reads this prepared snapshot.
 

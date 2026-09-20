@@ -10,7 +10,7 @@ export default async function(){
   const hour=Number(parts.find(x=>x.type==='hour')?.value||0);
   if(['Sat','Sun'].includes(weekday)||hour<4||hour>=20)return new Response('outside automatic 04:00-20:00 New York window',{status:200});
   const c=new AsyncWorkloadsClient();
-  await c.send('scanner.hourly.start',{data:{manual:false,scheduledAt:now.toISOString(),mode:'full-every-10-minutes'}});
+  await c.send('scanner.hourly.start',{data:{manual:false,scheduledAt:now.toISOString(),mode:'massive-technical-and-live-prices-every-10-minutes'}});
   return new Response('full scanner refresh queued',{status:202});
 }
 

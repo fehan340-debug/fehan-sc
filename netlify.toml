@@ -8,9 +8,10 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
-# Automatic scanner refresh is checked every hour at minute 40 Mon-Fri; the code enforces America/New_York 04:00-20:00 (16 eligible hourly runs/day). Borrow refresh starts at minute 50.
-
-# Netlify cron is UTC. The scheduled functions cover both DST/standard-time UTC windows,
-# while the workers enforce the exact America/New_York Mon-Fri 04:00-20:00 business window.
-
-# scanner-cache function emits Edge/CDN SWR headers: max-age=300, s-maxage=300, stale-while-revalidate=300.
+# Automation lanes:
+# - Massive technical + live prices: every 10 minutes on weekdays.
+# - Short/borrow: starts at minute 30 and publishes at the next top of the hour.
+# - Stock Splits (rolling 100 days) + Finviz Free Float: once daily at 09:30 America/New_York.
+# - IPO snapshot: once daily.
+# Netlify cron invokes the relevant checks; each function validates America/New_York time so DST is handled correctly.
+# Customer scanner responses are protected by a 5-minute server/edge cache layer.

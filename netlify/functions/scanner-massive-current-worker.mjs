@@ -50,32 +50,46 @@ async function getSnapshot(tickers){
   throw new Error(last||'Massive snapshot failed.');
 }
 function choosePrice(x,session,now){
-  const tradePrice=Number(x?.lastTrade?.p);
-  const tradeSess=tradeSession(x?.lastTrade?.t,now);
-  const dayClose=Number(x?.day?.c);
   const prevClose=Number(x?.prevDay?.c);
-  const lastTrade=Number.isFinite(tradePrice)&&tradePrice>0?tradePrice:null;
-  let price=null, source=null;
-  if(session==='pre'){
-    if(tradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
-    else if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
-    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
-  }else if(session==='regular'){
-    if(tradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
-    else if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
-    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
+  const dayClose=Number(x?.day?.c);
+  const lastTrade=Number.isFinite(Number(x?.lastTrade?.p))&&Number(x.lastTrade.p)>0?Number(x.lastTrade.p):null;
+  const lastTradeSess=tradeSession(x?.lastTrade?.t,now);
+  const afterPrice=Number(x?.afterHours?.p);
+  const prePrice=Number(x?.preMarket?.p);
+  const regularPrice=Number(x?.lastTrade?.p);
+  const valid=v=>Number.isFinite(v)&&v>0?v:null;
+  const after=valid(afterPrice);
+  const pre=valid(prePrice);
+  const regular=valid(regularPrice)||valid(dayClose)||valid(prevClose);
+  let price=null,source=null;
+  // User-facing rule: always prefer the most recent extended-hours quote in
+  // this order: after-hours -> pre-market -> regular/close. During regular
+  // trading, a current regular trade is preferred over stale extended quotes.
+  if(session==='regular'){
+    if(lastTradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
+    else if(after!=null&&lastTradeSess==='after'){price=after;source='afterHours';}
+    else if(pre!=null&&lastTradeSess==='pre'){price=pre;source='preMarket';}
+    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
+    else if(after!=null){price=after;source='afterHours';}
+    else if(pre!=null){price=pre;source='preMarket';}
   }else if(session==='after'){
-    if(tradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
-    else if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
-    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
+    if(after!=null){price=after;source='afterHours';}
+    else if(lastTradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
+    else if(pre!=null){price=pre;source='preMarket';}
+    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
+  }else if(session==='pre'){
+    if(pre!=null){price=pre;source='preMarket';}
+    else if(lastTradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
+    else if(after!=null){price=after;source='afterHours';}
+    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
   }else{
-    if(lastTrade!=null){price=lastTrade;source=tradeSess||'lastTrade';}
-    else if(Number.isFinite(dayClose)&&dayClose>0){price=dayClose;source='regularClose';}
-    else if(Number.isFinite(prevClose)&&prevClose>0){price=prevClose;source='previousClose';}
+    if(after!=null){price=after;source='afterHours';}
+    else if(pre!=null){price=pre;source='preMarket';}
+    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
   }
   if(!Number.isFinite(price)||price<=0)return null;
   const changeRaw=Number(x?.todaysChangePerc);
-  return {price,regularPrice:Number.isFinite(lastTrade)?lastTrade:(Number.isFinite(dayClose)?dayClose:null),preMarket:Number.isFinite(lastTrade)&&tradeSess==='pre'?lastTrade:null,afterHours:Number.isFinite(lastTrade)&&tradeSess==='after'?lastTrade:null,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:Number.isFinite(prevClose)&&prevClose>0?prevClose:null,changePct:Number.isFinite(changeRaw)?changeRaw:(Number.isFinite(prevClose)&&prevClose>0?(price-prevClose)/prevClose*100:null)};
+  return {price,regularPrice:regular,preMarket:pre,afterHours:after,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:Number.isFinite(prevClose)&&prevClose>0?prevClose:null,changePct:Number.isFinite(changeRaw)?changeRaw:(Number.isFinite(prevClose)&&prevClose>0?(price-prevClose)/prevClose*100:null)};
 }
 
 export async function runMassiveCurrentUpdate(){
@@ -122,7 +136,12 @@ export async function runMassiveCurrentUpdate(){
 export default async function(request){
   const c=await currentUser(request);
   if(!c?.user?.admin||c.maintenance||c.blocked)return new Response("Unauthorized",{status:403});
-  try{const x=await runMassiveCurrentUpdate();return new Response(JSON.stringify(x),{status:202,headers:{"content-type":"application/json"}});}
-  catch(e){return new Response(JSON.stringify({error:String(e?.message||e)}),{status:500,headers:{"content-type":"application/json"}});}
+  try{
+    // This function is deployed as a Netlify background function. Start the
+    // durable job and return immediately so the admin button never waits for
+    // the full Massive scan. Status is polled from Supabase by the UI.
+    void runMassiveCurrentUpdate().catch(error=>console.error('[massive-current-background]',error));
+    return new Response(JSON.stringify({ok:true,started:true,status:'building'}),{status:202,headers:{"content-type":"application/json"}});
+  }catch(e){return new Response(JSON.stringify({error:String(e?.message||e)}),{status:500,headers:{"content-type":"application/json"}});}
 }
 export const config={background:true};

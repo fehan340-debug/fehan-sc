@@ -119,7 +119,7 @@ async function buildTicker(t,events,refs,snap,borrow){
     const post=tech.slice(-252);
     const range={high52:post.length?Math.max(...post.map(b=>Number(b.h)).filter(Number.isFinite)):null,low52:post.length?Math.min(...post.map(b=>Number(b.l)).filter(Number.isFinite)):null};
     const low=lowSince(tech,e.execution_date), h=fourHInfo(intraday,e.execution_date,tech);
-    rows.push({ticker:t,splitDate:e.execution_date,splitOpen,current,currentPrice,preMarketPrice,afterHoursPrice,closePrice,rsi:ind.rsi,ma5:ind.ma5,ma20:ind.ma20,ema20:ind.ema20,ema50:ind.ema50,cci:ind.cci,low:low.low,lowDate:low.lowDate,sinceLow:low.sinceLow,high52:range.high52,low52:range.low52,low4h:h.low4h,low4hDate:h.low4hDate,low4hDays:h.low4hDays,split4hHigh:h.split4hHigh,shortShares:shares,borrowFee:fee,freeFloat:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,free_float:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,shortDataState:shortState,shortDataSource:borrow?.source||null,shortDataUpdatedAt:borrow?.updatedAt||null,freeFloatSource:borrow?.freeFloat!=null?(borrow?.source||'chartexchange-direct-html'):null,freeFloatUpdatedAt:borrow?.freeFloat!=null?(borrow?.updatedAt||null):null,changePct:change,exchange:refs[t]?.exchange_name||refs[t]?.primary_exchange||null,primaryExchange:refs[t]?.primary_exchange||null,flag:flag(refs[t]),updatedAt:new Date().toISOString()});
+    rows.push({ticker:t,splitDate:e.execution_date,splitOpen,current,currentPrice,preMarketPrice,afterHoursPrice,closePrice,rsi:ind.rsi,ma5:ind.ma5,ma20:ind.ma20,ema20:ind.ema20,ema50:ind.ema50,cci:ind.cci,low:low.low,lowDate:low.lowDate,sinceLow:low.sinceLow,high52:range.high52,low52:range.low52,low4h:h.low4h,low4hDate:h.low4hDate,low4hDays:h.low4hDays,split4hHigh:h.split4hHigh,shortShares:shares,borrowFee:fee,freeFloat:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,free_float:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,shortDataState:shortState,shortDataSource:borrow?.source||null,shortDataUpdatedAt:borrow?.updatedAt||null,freeFloatSource:borrow?.freeFloat!=null?(borrow?.freeFloatSource||'finviz-scrapingant'):null,freeFloatUpdatedAt:borrow?.freeFloat!=null?(borrow?.freeFloatUpdatedAt||null):null,changePct:change,exchange:refs[t]?.exchange_name||refs[t]?.primary_exchange||null,primaryExchange:refs[t]?.primary_exchange||null,flag:flag(refs[t]),updatedAt:new Date().toISOString()});
   }
   return rows;
 }
@@ -145,12 +145,15 @@ export async function runHourlyBuild({manual=false,force=true}={}){
   await store.setJSON('scanner-hourly-lock-v2',{jobId,startedAt});
   await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'building',jobId,startedAt,manual,phase:'تجهيز قائمة Stock Split',totalBatches:1,completedBatches:0,totalTickers:0,completedTickers:0,failedTickers:[],error:null,publishedAt:null,updatedAt:startedAt});
   try{
-    const universe=await getUniverse({refresh:true,maxAgeMs:60*60*1000});
-    // Full refresh means every data lane is fetched again for this publication.
-    // Do not reuse the previous borrow/current snapshot as the source of truth.
+    const universe=await getUniverse({refresh:false,maxAgeMs:24*60*60*1000});
+    // Each 10-minute publication refreshes Massive technical/live-price data.
+    // Short and Free Float remain independent prepared snapshots and are merged
+    // immediately before publication so a slow scraper never blocks Massive.
     const snap=await snapshot(universe.tickers||[]);
     const borrow=await readBorrowCache();
     const borrowRecords=borrow.records||{};
+    const floatCache=await store.get('scanner-float-data-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+    const floatRecords=floatCache?.records||{};
     // The public researcher shows one row per ticker: if a ticker has multiple
     // split events in the 100-day window, keep only its newest split event.
     const latestByTicker=new Map();
@@ -164,7 +167,7 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     if(!entries.length)throw new Error('قائمة Stock Split فارغة بعد بناء القائمة.');
     await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'building',jobId,startedAt,manual,phase:`جاري تحديث ${entries.length} سهمًا`,totalBatches:1,completedBatches:0,totalTickers:entries.length,completedTickers:0,failedTickers:[],error:null,publishedAt:null,updatedAt:new Date().toISOString(),universeUpdatedAt:universe.updatedAt});
     const rows=[], failed=[]; let idx=0,done=0;
-    const worker=async()=>{while(true){const i=idx++;if(i>=entries.length)return;const [t,events]=entries[i];let built=null,last=null;for(let a=1;a<=3;a++){try{built=await buildTicker(t,events,universe.references||{},snap,borrowRecords[t]);if(built.length>=events.length)break;}catch(e){last=e;}if(a<3)await sleep(700*a);}if(built?.length)rows.push(...built);if(!built||built.length<events.length){failed.push({ticker:t,error:String(last?.message||`missing ${events.length-(built?.length||0)} rows`)});}done++;if(done===1||done%5===0||done===entries.length){await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'building',jobId,startedAt,manual,phase:`البيانات اليومية ${done}/${entries.length}`,totalBatches:1,completedBatches:0,totalTickers:entries.length,completedTickers:done,failedTickers:failed.slice(0,50),error:null,publishedAt:null,updatedAt:new Date().toISOString(),universeUpdatedAt:universe.updatedAt});}}};
+    const worker=async()=>{while(true){const i=idx++;if(i>=entries.length)return;const [t,events]=entries[i];let built=null,last=null;for(let a=1;a<=3;a++){try{built=await buildTicker(t,events,universe.references||{},snap,{...(borrowRecords[t]||{}),...(floatRecords[t]||{})});if(built.length>=events.length)break;}catch(e){last=e;}if(a<3)await sleep(700*a);}if(built?.length)rows.push(...built);if(!built||built.length<events.length){failed.push({ticker:t,error:String(last?.message||`missing ${events.length-(built?.length||0)} rows`)});}done++;if(done===1||done%5===0||done===entries.length){await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'building',jobId,startedAt,manual,phase:`البيانات اليومية ${done}/${entries.length}`,totalBatches:1,completedBatches:0,totalTickers:entries.length,completedTickers:done,failedTickers:failed.slice(0,50),error:null,publishedAt:null,updatedAt:new Date().toISOString(),universeUpdatedAt:universe.updatedAt});}}};
     await Promise.all(Array.from({length:Math.min(8,entries.length)},worker));
     const unique=new Map();for(const r of rows)unique.set(`${String(r.ticker).toUpperCase()}|${r.splitDate}`,r);
     let finalRows=[...unique.values()].sort((a,b)=>String(a.splitDate).localeCompare(String(b.splitDate))||a.ticker.localeCompare(b.ticker));
@@ -172,14 +175,24 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     // a long hourly build from publishing an older short/borrow or current-price snapshot.
     const latestBorrow=await readBorrowCache();
     const latestBorrowRecords=latestBorrow?.records||{};
+    const latestFloat=await store.get('scanner-float-data-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+    const latestFloatRecords=latestFloat?.records||{};
     const latestCurrent=await store.get('scanner-massive-current-v1',{type:'json',consistency:'strong'}).catch(()=>null);
     const currentMap=latestCurrent?.records||{};
     finalRows=finalRows.map(r=>{
       const t=String(r.ticker||'').toUpperCase();
       const b=latestBorrowRecords[t];
+      const f=latestFloatRecords[t];
       const c=currentMap[t];
       let x=r;
-      if(b){const bs=Number(b.shares),bf=Number(b.fee);x={...x,shortShares:Number.isFinite(bs)?bs:null,borrowFee:Number.isFinite(bf)?bf:null,freeFloat:Number.isFinite(Number(b.freeFloat??b.free_float))?Number(b.freeFloat??b.free_float):x.freeFloat,free_float:Number.isFinite(Number(b.freeFloat??b.free_float))?Number(b.freeFloat??b.free_float):x.freeFloat??x.free_float,freeFloatSource:b.freeFloat!=null?(b.source||'chartexchange-direct-html'):x.freeFloatSource,freeFloatUpdatedAt:b.freeFloat!=null?(b.updatedAt||null):x.freeFloatUpdatedAt,shortDataState:Number.isFinite(bs)&&Number.isFinite(bf)?'ready':'unavailable',shortDataSource:b.source||null,shortDataUpdatedAt:b.updatedAt||null};}
+      if(b){
+        const bs=Number(b.shares),bf=Number(b.fee);
+        x={...x,shortShares:Number.isFinite(bs)?bs:null,borrowFee:Number.isFinite(bf)?bf:null,shortDataState:Number.isFinite(bs)&&Number.isFinite(bf)?'ready':'unavailable',shortDataSource:b.source||x.shortDataSource||null,shortDataUpdatedAt:b.updatedAt||x.shortDataUpdatedAt||null};
+      }
+      if(f&&Number.isFinite(Number(f.freeFloat))){
+        const ff=Number(f.freeFloat);
+        x={...x,freeFloat:ff,free_float:ff,freeFloatSource:f.freeFloatSource||'finviz-scrapingant',freeFloatUpdatedAt:f.freeFloatUpdatedAt||x.freeFloatUpdatedAt||null};
+      }
       if(c && Number.isFinite(Number(c.price)) && latestCurrent?.updatedAt && new Date(latestCurrent.updatedAt).getTime()>=new Date(startedAt).getTime()) x={...x,current:Number(c.price),changePct:Number.isFinite(Number(c.changePct))?Number(c.changePct):x.changePct,currentUpdatedAt:latestCurrent.updatedAt};
       return x;
     });
@@ -199,7 +212,7 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     const publishedAt=new Date().toISOString();
     const versionKey=`scanner-cache-data-v2:${jobId}`;
     const ipoCache=await readIpoCache();
-    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-direct-html-fresh',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
+    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-via-scrapingant-hourly-snapshot',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
     await store.setJSON(versionKey,payload);
     await writeDataBundle(payload);
     try{

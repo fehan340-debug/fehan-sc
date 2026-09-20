@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { store } from './store.mjs';
-import { borrowFromScraperAPI } from '../netlify/functions/chartexchange.mjs';
-import { fetchFinvizStockInfo } from './finviz.mjs';
+import { borrowFromScrapingAnt } from '../netlify/functions/chartexchange.mjs';
 
 const JOB_KEY='scanner-borrow-job-v4';
 const STATUS_KEY='scanner-borrow-status';
@@ -21,24 +20,8 @@ async function instantPublish(ticker,b,stamp){
   if(!base?.ready||!Array.isArray(base.records))return;
   const rows=base.records.map(row=>{
     if(String(row.ticker||'').toUpperCase()!==ticker)return row;
-    const shares=finite(b?.shares), fee=finite(b?.fee), ff=finite(b?.freeFloat??b?.free_float);
-    const retained=ff!==null?ff:finite(row.freeFloat??row.free_float);
-    return {...row,
-      shortShares:shares,
-      borrowFee:fee,
-      freeFloat:retained,
-      free_float:retained,
-      shortDataState:shares!==null&&fee!==null?'ready':'unavailable',
-      shortDataSource:b?.source||null,
-      shortDataUpdatedAt:b?.updatedAt||stamp,
-      freeFloatSource:ff!==null?(b?.freeFloatSource||b?.source||null):(row.freeFloatSource||null),
-      freeFloatUpdatedAt:ff!==null?(b?.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null),
-      finvizPrice:b?.finvizPrice!=null?b.finvizPrice:row.finvizPrice,
-      finvizPreMarketPrice:b?.finvizPreMarketPrice!=null?b.finvizPreMarketPrice:row.finvizPreMarketPrice,
-      finvizAfterHoursPrice:b?.finvizAfterHoursPrice!=null?b.finvizAfterHoursPrice:row.finvizAfterHoursPrice,
-      finvizPriceUpdatedAt:b?.finvizPriceUpdatedAt||row.finvizPriceUpdatedAt||null,
-      finvizSource:b?.finvizSource||row.finvizSource||null
-    };
+    const shares=finite(b?.shares), fee=finite(b?.fee);
+    return {...row,shortShares:shares,borrowFee:fee,shortDataState:shares!==null&&fee!==null?'ready':'unavailable',shortDataSource:b?.source||null,shortDataUpdatedAt:b?.updatedAt||stamp};
   });
   const payload={...base,records:rows,borrowUpdatedAt:stamp,updatedAt:stamp};
   await setJson(key,payload);
@@ -69,24 +52,8 @@ async function finish(job,stamp){
       const ticker=String(row?.ticker||'').toUpperCase();
       const b=shortMap[ticker];
       if(!b)return row;
-      const shares=finite(b.shares), fee=finite(b.fee), ff=finite(b.freeFloat??b.free_float);
-      const retainedFloat=ff!==null?ff:finite(row.freeFloat??row.free_float);
-      return {...row,
-        shortShares:shares,
-        borrowFee:fee,
-        freeFloat:retainedFloat,
-        free_float:retainedFloat,
-        shortDataState:(shares!==null&&fee!==null)?'ready':(row.shortDataState||'unavailable'),
-        shortDataSource:b.source||row.shortDataSource||null,
-        shortDataUpdatedAt:b.updatedAt||row.shortDataUpdatedAt||null,
-        freeFloatSource:ff!==null?(b.freeFloatSource||b.source||null):(row.freeFloatSource||null),
-        freeFloatUpdatedAt:ff!==null?(b.freeFloatUpdatedAt||stamp):(row.freeFloatUpdatedAt||null),
-        finvizPrice:b.finvizPrice!=null?b.finvizPrice:row.finvizPrice,
-        finvizPreMarketPrice:b.finvizPreMarketPrice!=null?b.finvizPreMarketPrice:row.finvizPreMarketPrice,
-        finvizAfterHoursPrice:b.finvizAfterHoursPrice!=null?b.finvizAfterHoursPrice:row.finvizAfterHoursPrice,
-        finvizPriceUpdatedAt:b.finvizPriceUpdatedAt||row.finvizPriceUpdatedAt||null,
-        finvizSource:b.finvizSource||row.finvizSource||null
-      };
+      const shares=finite(b.shares), fee=finite(b.fee);
+      return {...row,shortShares:shares,borrowFee:fee,shortDataState:(shares!==null&&fee!==null)?'ready':(row.shortDataState||'unavailable'),shortDataSource:b.source||row.shortDataSource||null,shortDataUpdatedAt:b.updatedAt||row.shortDataUpdatedAt||null};
     });
     const merged={...central,records:mergedRecords,borrowUpdatedAt:stamp,shortUpdatedAt:stamp,updatedAt:central.updatedAt||stamp};
     await setJson('scanner-cache-v1',merged);
@@ -125,11 +92,11 @@ async function processTicker(job,ticker){
   try{
     if(!supportedExchange(exchange))throw new Error('Missing supported exchange mapping');
     // Phase 1: ChartExchange only. Free Float is deliberately NOT fetched here.
-    value=await borrowFromScraperAPI(ticker,exchange,{signal:controller.signal});
+    value=await borrowFromScrapingAnt(ticker,exchange,{signal:controller.signal});
     shortOk=Boolean(value&&(value.shares!=null||value.fee!=null));
     if(!shortOk)error=value?.reason||'scrape-no-borrow-data';
   }catch(e){
-    error=e?.name==='AbortError'?'scraperapi-timeout':String(e?.message||e);
+    error=e?.name==='AbortError'?'scrapingant-timeout':String(e?.message||e);
   }finally{clearTimeout(timer);}
 
   const stamp=new Date().toISOString();
@@ -145,9 +112,9 @@ async function processTicker(job,ticker){
       freeFloatSource:old.freeFloatSource||null,
       freeFloatUpdatedAt:old.freeFloatUpdatedAt||null,
       updatedAt:stamp,
-      source:value?.source||'scraperapi-chartexchange-direct-html',
+      source:value?.source||'scrapingant-chartexchange-direct-html',
       state:'ready',
-      shortDataSource:value?.source||'scraperapi-chartexchange-direct-html',
+      shortDataSource:value?.source||'scrapingant-chartexchange-direct-html',
       shortDataUpdatedAt:stamp,
       lastError:null
     };
@@ -174,54 +141,6 @@ async function processTicker(job,ticker){
 
 function easternDate(){
   return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-}
-
-async function refreshDailyFinvizFloat(job){
-  const today=easternDate();
-  const marker=await getJson('scanner-finviz-float-daily-v1');
-  if(marker?.date===today && marker?.state==='ready'){
-    await setJson(STATUS_KEY,{state:'ready',jobId:job.jobId,startedAt:job.startedAt,finishedAt:new Date().toISOString(),error:null,total:job.total,done:job.total,attempts:job.attempted,successful:job.successful,failed:job.failed,records:Object.keys(job.records).length,phase:'daily-float-already-complete',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions',floatDate:today,floatUpdatedAt:marker.completedAt||null});
-    return marker;
-  }
-
-  const startedAt=new Date().toISOString();
-  await setJson('scanner-finviz-float-status-v1',{state:'building',date:today,startedAt,finishedAt:null,total:job.total,done:0,successful:0,failed:0});
-  let idx=0,successful=0,failed=0;
-  const tickers=job.tickers.slice();
-  const worker=async()=>{
-    while(true){
-      const i=idx++; if(i>=tickers.length)return;
-      const ticker=tickers[i];
-      const old=job.records[ticker]||{};
-      const controller=new AbortController();
-      const timer=setTimeout(()=>controller.abort(),TIMEOUT_MS);
-      try{
-        const finviz=await fetchFinvizStockInfo(ticker,{signal:controller.signal});
-        const ff=finviz?.ok?finite(finviz.freeFloat):null;
-        if(ff!==null){
-          job.records[ticker]={...old,freeFloat:ff,free_float:ff,freeFloatSource:'finviz',freeFloatUpdatedAt:new Date().toISOString(),finvizSource:'finviz',state:old.state||'ready'};
-          successful++;
-          await setJson(`scanner-short-record:${ticker}`,{ticker,exchange:job.exchangeByTicker?.[ticker]||'',...job.records[ticker],jobId:job.jobId,index:i+1,total:job.total,savedAt:new Date().toISOString()});
-        }else{
-          failed++;
-          console.warn('[external-short-worker] finviz float failed',{ticker,status:finviz?.status||null,reason:finviz?.reason||'finviz-no-free-float'});
-        }
-      }catch(e){
-        failed++;
-        console.warn('[external-short-worker] finviz float exception',{ticker,error:e?.name==='AbortError'?'finviz-timeout':String(e?.message||e)});
-      }finally{clearTimeout(timer);}
-      if((i+1)===1||(i+1)%5===0||(i+1)===tickers.length){
-        await setJson('scanner-finviz-float-status-v1',{state:'building',date:today,startedAt,finishedAt:null,total:tickers.length,done:i+1,successful,failed,currentTicker:ticker,updatedAt:new Date().toISOString()});
-      }
-    }
-  };
-  // Keep Finviz separate from ChartExchange and lightly parallelized to avoid a very long daily run.
-  await Promise.all(Array.from({length:3},worker));
-  const completedAt=new Date().toISOString();
-  const markerOut={version:1,state:'ready',date:today,startedAt,completedAt,total:tickers.length,successful,failed,universeUpdatedAt:job.universeUpdatedAt||null,source:'finviz-daily'};
-  await setJson('scanner-finviz-float-daily-v1',markerOut);
-  await setJson('scanner-finviz-float-status-v1',markerOut);
-  return markerOut;
 }
 
 async function autoUpdatesEnabled(){
@@ -257,13 +176,12 @@ async function main(){
     if(stale)job={...job,active:false};
     job=await createJob(trigger);
   }
-  if(job.cursor>=job.total){await refreshDailyFinvizFloat(job);await finish(job,new Date().toISOString());return;}
+  if(job.cursor>=job.total){await finish(job,new Date().toISOString());return;}
   while(job.cursor<job.total){
     const ticker=job.tickers[job.cursor];
     const complete=await processTicker(job,ticker);
-    if(complete){await refreshDailyFinvizFloat(job);await finish(job,new Date().toISOString());return;}
+    if(complete){await finish(job,new Date().toISOString());return;}
   }
-  await refreshDailyFinvizFloat(job);
   await finish(job,new Date().toISOString());
 }
 

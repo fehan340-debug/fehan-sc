@@ -1,12 +1,14 @@
-# External Short Worker — Supabase only
+# External Short / Free Float Workers
 
-The short worker runs in GitHub Actions and uses Supabase as its only persistent store.
+The project uses two independent GitHub Actions workers:
 
-Required GitHub secrets:
-- `SCRAPERAPI_KEY`
+1. **Short worker** — starts from the Netlify minute-30 trigger and scrapes ChartExchange through ScrapingAnt. It waits for the next top of the hour before publishing the completed short snapshot.
+2. **Daily Free Float worker** — is dispatched after the 09:30 America/New_York split-universe refresh and scrapes Finviz through ScrapingAnt with browser rendering disabled.
+
+Required GitHub Actions secrets:
+
+- `SCRAPINGANT_API_KEY`
 - `SUPABASE_URL`
-- `SUPABASE_KEY` (service_role/secret key)
+- `SUPABASE_KEY`
 
-The worker reads `scanner-universe-v2` directly from Supabase, processes the approved tickers one by one, checkpoints each ticker, and writes the final short state back to Supabase. Netlify Blobs, `NETLIFY_SITE_ID`, and `NETLIFY_AUTH_TOKEN` are not required by this worker.
-
-The short source remains ScraperAPI -> ChartExchange HTML.
+Both workers checkpoint per ticker using keys such as `scanner-short-record:TSLA`. Supabase uses the `key` primary key with `resolution=merge-duplicates`, so existing ticker records are updated rather than duplicated.
