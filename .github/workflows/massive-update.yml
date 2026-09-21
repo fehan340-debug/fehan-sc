@@ -1,0 +1,23 @@
+name: Massive Market Data Update
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  update-massive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm install
+      - run: node worker/massive-worker.mjs
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SITE_SETTINGS_TABLE: app_site_settings_store
+          FORCE_MASSIVE_RUN: ${{ github.event.inputs.source == 'manual-admin-massive' && 'true' || 'false' }}

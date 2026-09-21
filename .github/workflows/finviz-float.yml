@@ -1,4 +1,4 @@
-name: Short Scraper Background Worker
+name: Daily Finviz Free Float Worker
 
 on:
   workflow_dispatch:
@@ -6,14 +6,14 @@ on:
       source:
         description: Trigger source
         required: false
-        default: manual-admin
+        default: daily-market-open
       requested_at:
         description: Trigger timestamp
         required: false
         default: ""
 
 concurrency:
-  group: nasdaq-short-worker
+  group: nasdaq-daily-float-worker
   cancel-in-progress: false
 
 jobs:
@@ -27,40 +27,20 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SUPABASE_TABLE: scanner_worker_store
+      FORCE_FLOAT_RUN: ${{ github.event.inputs.source == 'manual-admin-float-only' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
       - name: Setup Node 24
         uses: actions/setup-node@v5
         with:
           node-version: 24
-
-      - name: Install dependencies and ensure lock file
-        shell: bash
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            echo 'package-lock.json not found; generating it with npm install.'
-            npm install --no-audit --no-fund
-          fi
-
-      - name: Enable npm cache
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
       - name: Validate required secrets
         run: |
           test -n "$SCRAPINGANT_API_KEY" || (echo "Missing SCRAPINGANT_API_KEY" && exit 1)
           test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
           test -n "$SUPABASE_KEY" || (echo "Missing SUPABASE_KEY" && exit 1)
-          echo "Supabase and ScrapingAnt secrets are present."
-
-      - name: Run external short scraper
-        env:
-          FORCE_SHORT_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-          FORCE_SHORT_PUBLISH: ${{ startsWith(github.event.inputs.source, 'manual-') && 'true' || 'false' }}
-        run: node worker/short-worker.mjs
+      - name: Run daily Finviz float worker
+        run: node worker/float-worker.mjs
