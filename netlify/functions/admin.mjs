@@ -64,6 +64,7 @@ export default async function(request){
     if(action==="refresh-float") return json({ok:true,mode:"github-worker",endpoint:"/.netlify/functions/float-worker-manual"});
     if(action==="refresh-borrow") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/update-short-background"});
     if(action==="refresh-massive-current") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-massive-current-worker"});
+    if(action==="refresh-massive") return json(await dispatchMassiveWorker({source:'manual-admin-massive'}),202);
     if(action==="site-stats") {
       const site=await getSiteSettings();
       const requestRows=await getRequests();
@@ -104,6 +105,16 @@ export default async function(request){
         siteMode:site.siteMode,siteModeMessage:site.siteModeMessage||"",
         statsUpdatedAt:new Date().toISOString()
       }});
+    }
+    if(action==="setup-telegram-webhook"){
+      const token=String(process.env.TELEGRAM_BOT_TOKEN||"").trim();
+      const site=String(process.env.SITE_URL||process.env.URL||"").trim().replace(/\/+$/,'');
+      if(!token||!site)return json({error:"ضع TELEGRAM_BOT_TOKEN وSITE_URL في متغيرات البيئة أولاً."},400);
+      const webhook=`${site}/.netlify/functions/telegram-webhook`;
+      const body={url:webhook}; const secret=String(process.env.TELEGRAM_WEBHOOK_SECRET||"").trim(); if(secret)body.secret_token=secret;
+      const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/setWebhook`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({})); if(!r.ok||d?.ok!==true)return json({error:d?.description||`Telegram HTTP ${r.status}`},502);
+      return json({ok:true,webhook});
     }
     if(action==="requests") return json({requests:await getRequests()});
     if(action==="reply-support"){

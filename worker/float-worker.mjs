@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { store } from './store.mjs';
 import { fetchFinvizStockInfo } from './finviz.mjs';
 
-const TIMEOUT_MS=15000;
+const TIMEOUT_MS=8000;
 const JOB_KEY='scanner-float-job-v1';
 const STATUS_KEY='scanner-finviz-float-status-v1';
 const finite=n=>Number.isFinite(Number(n))?Number(n):null;

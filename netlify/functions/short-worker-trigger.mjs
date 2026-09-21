@@ -45,22 +45,21 @@ export async function dispatchShortWorker({source='manual-admin'}={}){
     source:trigger.source,
     worker:'github-actions'
   });
-  const url=`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/workflows/${workflow.split('/').map(encodeURIComponent).join('/')}/dispatches`;
-  const response=await fetch(url,{
-    method:'POST',
-    headers:{
-      accept:'application/vnd.github+json',
-      authorization:`Bearer ${token}`,
-      'x-github-api-version':'2026-03-10',
-      'content-type':'application/json',
-      'user-agent':'nasdaq-scanner-short-worker'
-    },
-    body:JSON.stringify({ref,inputs:{source:String(source||'manual-admin'),requested_at:stamp}})
-  });
+  const headers={accept:'application/vnd.github+json',authorization:`Bearer ${token}`,'x-github-api-version':'2022-11-28','content-type':'application/json','user-agent':'nasdaq-scanner-short-worker'};
+  const base=`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const wanted=workflow.replace(/^\/+/,''),nameOnly=wanted.split('/').pop();
+  const list=await fetch(`${base}/actions/workflows?per_page=100`,{headers});
+  const listText=await list.text();let listData={};try{listData=listText?JSON.parse(listText):{};}catch{}
+  if(!list.ok)throw new Error(`تعذر قراءة Workflows من GitHub (HTTP ${list.status}).`);
+  const workflows=Array.isArray(listData.workflows)?listData.workflows:[];
+  const match=workflows.find(w=>String(w.path||'').replace(/^\/+|\/+$/g,'')===wanted)||workflows.find(w=>String(w.path||'').endsWith(`/${nameOnly}`))||workflows.find(w=>String(w.name||'').trim()===nameOnly);
+  if(!match)throw new Error(`ملف Workflow غير موجود في المستودع: ${wanted}.`);
+  const url=`${base}/actions/workflows/${encodeURIComponent(String(match.id))}/dispatches`;
+  const response=await fetch(url,{method:'POST',headers,body:JSON.stringify({ref,inputs:{source:String(source||'manual-admin'),requested_at:stamp}})});
   if(!response.ok){
     const body=await response.text();
     await store.setJSON('scanner-borrow-status',{state:'error',phase:'worker-dispatch-failed',mode:'external-github-actions',error:`GitHub HTTP ${response.status}: ${body.slice(0,500)}`,requestedAt:stamp,finishedAt:new Date().toISOString()}).catch(()=>{});
     throw new Error(`تعذر تشغيل Background Worker على GitHub (HTTP ${response.status}).`);
   }
-  return {ok:true,repo:`${owner}/${name}`,workflow,ref,requestedAt:stamp,trigger};
+  return {ok:true,repo:`${owner}/${name}`,workflow:match.path||workflow,workflowId:match.id,ref,requestedAt:stamp,trigger};
 }

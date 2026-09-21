@@ -2,12 +2,12 @@
 // No Netlify Blobs, site ID, or Netlify auth token is used anywhere in this worker.
 
 const supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '').replace(/\/rest\/v1$/i, '');
-const supabaseKey = String(process.env.SUPABASE_KEY || '').trim();
+const supabaseKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '').trim();
 const table = String(process.env.SUPABASE_TABLE || 'scanner_worker_store').trim();
 
 function assertSupabase() {
   if (!supabaseUrl || !supabaseKey) {
-    throw new Error('SUPABASE_URL و SUPABASE_KEY مطلوبان للـ GitHub Actions Worker.');
+    throw new Error('SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY (أو SUPABASE_KEY) مطلوبان للـ GitHub Actions Worker.');
   }
   if (!table) throw new Error('SUPABASE_TABLE غير صالح.');
 }

@@ -5,12 +5,17 @@ import { borrowFromScrapingAnt } from '../netlify/functions/chartexchange.mjs';
 const JOB_KEY='scanner-borrow-job-v4';
 const STATUS_KEY='scanner-borrow-status';
 const TRIGGER_KEY='trigger_short_update';
-const TIMEOUT_MS=15000;
+const TIMEOUT_MS=8000;
 const ENGINE_VERSION=8;
 const finite=n=>Number.isFinite(Number(n))?Number(n):null;
 
 async function getJson(key){return await store.get(key);}
 async function setJson(key,value){await store.setJSON(key,value);}
+async function updateCacheStatus(fields={}){
+  const current=await getJson('cache_status').catch(()=>null)||{};
+  const now=new Date().toISOString();
+  await setJson('cache_status',{...current,...fields,last_short_update:fields.last_short_update||now,updated_at:now});
+}
 
 async function publishShortOverlay(ticker,b,stamp){
   const key='scanner-short-overlay-v1';
@@ -66,6 +71,7 @@ async function finish(job,stamp){
     await setJson('scanner-cache-pointer-v2',{version:2,key:'scanner-cache-v1',updatedAt:merged.updatedAt,records:mergedRecords.length,shortUpdatedAt:stamp});
   }
   await setJson('trigger_short_update',{trigger:false,status:'complete',clearedAt:stamp,source:job.triggerSource||'external-worker',jobId:job.jobId});
+  await updateCacheStatus({last_short_update:stamp,short_state:'ready',short_job_id:job.jobId,short_total:job.total,short_done:job.total});
   await setJson(STATUS_KEY,{state:'ready',jobId:job.jobId,startedAt:job.startedAt,finishedAt:stamp,error:null,total:job.total,done:job.total,attempts:job.attempted,successful:doneUnique,failed:Math.max(0,job.total-doneUnique),records:Object.keys(job.records).length,phase:'complete',timeoutMs:TIMEOUT_MS,publishedAt:stamp,mode:'external-github-actions',worker:'github-actions'});
   await store.delete(JOB_KEY).catch(()=>{});
 }
@@ -82,7 +88,7 @@ async function createJob(trigger){
   const records=previous?.records&&typeof previous.records==='object'?{...previous.records}:{};
   const exchangeByTicker=Object.fromEntries(tickers.map(t=>[t,String(universe?.references?.[t]?.primary_exchange||'').toUpperCase()]));
   const now=new Date().toISOString();
-  const job={active:true,engineVersion:ENGINE_VERSION,jobId:crypto.randomUUID(),triggerSource:trigger?.source||'external-worker',startedAt:now,tickers,exchangeByTicker,cursor:0,attempted:0,successful:0,failed:0,records,universeUpdatedAt:universe?.updatedAt||null,total:tickers.length,lastActivityAt:now,publishAt:new Date(Math.ceil(Date.now()/3600000)*3600000).toISOString()};
+  const job={active:true,engineVersion:ENGINE_VERSION,jobId:crypto.randomUUID(),triggerSource:trigger?.source||'external-worker',startedAt:now,tickers,exchangeByTicker,cursor:0,attempted:0,successful:0,failed:0,records,universeUpdatedAt:universe?.updatedAt||null,total:tickers.length,lastActivityAt:now,publishAt:(String(trigger?.source||'').startsWith('manual-') || String(process.env.FORCE_SHORT_PUBLISH||'').toLowerCase()==='true')?now:new Date(Math.ceil(Date.now()/3600000)*3600000).toISOString()};
   await setJson(JOB_KEY,job);
   await setJson(STATUS_KEY,{state:'building',jobId:job.jobId,startedAt:now,finishedAt:null,error:null,total:job.total,done:0,attempts:0,successful:0,failed:0,records:Object.keys(records).length,phase:'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions'});
   return job;
@@ -145,6 +151,7 @@ async function processTicker(job,ticker){
     try{
       await instantPublish(ticker,{...value,updatedAt:stamp},stamp);
       await publishShortOverlay(ticker,{...value,updatedAt:stamp},stamp);
+      await updateCacheStatus({last_short_update:stamp,short_state:'building',short_ticker:ticker,short_job_id:job.jobId});
     }catch(publishError){console.warn('[external-short-worker] immediate publish failed',{ticker,error:String(publishError?.message||publishError)});}
   }
   await setJson(JOB_KEY,job);

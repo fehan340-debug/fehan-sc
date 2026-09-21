@@ -39,9 +39,9 @@ export async function fetchFinvizStockInfo(symbol,{signal}={}){
   if(!key)return {ok:false,reason:'missing-scrapingant-key'};
 
   const target=`${FINVIZ}/quote.ashx?t=${encodeURIComponent(ticker)}`;
-  const qs=new URLSearchParams({url:target,'x-api-key':key,browser:'false',timeout:'15'});
+  const qs=new URLSearchParams({url:target,'x-api-key':key,browser:'false',timeout:'8'});
   const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),15000);
+  const timer=setTimeout(()=>controller.abort(),8000);
   const abortExternal=()=>controller.abort();
   if(signal){if(signal.aborted)controller.abort();else signal.addEventListener('abort',abortExternal,{once:true});}
   try{

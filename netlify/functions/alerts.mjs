@@ -1,4 +1,4 @@
-import { json, readJson, currentUser, getDataStore, getFavorites, getUserSettingsStore, getUsers } from "../../lib.js";
+import { json, readJson, currentUser, getDataStore, getFavorites, getUserSettingsStore, getUsers, saveUsers, randomToken } from "../../lib.js";
 import { readPublishedCache } from "./scanner-hourly-core.mjs";
 
 const keyFor=(email,name)=>`alerts:${String(email||"").toLowerCase()}:${name}`;
@@ -17,16 +17,80 @@ function cleanAlert(a){
   if(r.rsi.enabled && (r.rsi.value===null || r.rsi.value<0 || r.rsi.value>100)) throw new Error(`قيمة RSI ${ticker} غير صحيحة.`);
   return r;
 }
-async function sendOneSignal(email,title,message,data={}){
-  const appId=String(process.env.ONESIGNAL_APP_ID||"").trim(), apiKey=String(process.env.ONESIGNAL_REST_API_KEY||"").trim();
-  if(!appId||!apiKey) return {sent:false,reason:"onesignal_not_configured"};
-  const r=await fetch("https://api.onesignal.com/notifications",{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Basic ${apiKey}`},body:JSON.stringify({app_id:appId,target_channel:"push",include_aliases:{external_id:[String(email).toLowerCase()]},headings:{en:title,ar:title},contents:{en:message,ar:message},data})});
-  const text=await r.text(); let d={}; try{d=text?JSON.parse(text):{};}catch{}
-  if(!r.ok) throw new Error(`OneSignal HTTP ${r.status}: ${d.errors?.[0]||d.message||text.slice(0,200)}`);
-  return {sent:true,id:d.id||null};
+function telegramConfig(){
+  return {
+    token:String(process.env.TELEGRAM_BOT_TOKEN||"").trim(),
+    username:String(process.env.TELEGRAM_BOT_USERNAME||"").trim().replace(/^@/,""),
+    siteUrl:String(process.env.SITE_URL||process.env.URL||"").trim().replace(/\/+$/,"")
+  };
 }
-async function readAlerts(email){return await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{};}
-async function saveAlerts(email,v){await getDataStore().setJSON(keyFor(email,'settings'),v||{});return v||{};}
+async function createTelegramLink(email){
+  const {username}=telegramConfig();
+  if(!username)return null;
+  const token=randomToken();
+  await getDataStore().setJSON(`telegram-link:${token}`,{email:String(email).toLowerCase(),createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+30*60*1000).toISOString()});
+  return `https://t.me/${encodeURIComponent(username)}?start=${encodeURIComponent(token)}`;
+}
+async function sendTelegram(chatId,text){
+  const token=String(process.env.TELEGRAM_BOT_TOKEN||"").trim();
+  if(!token||!chatId)return {sent:false,reason:!token?"telegram_not_configured":"telegram_not_linked"};
+  const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:chatId,text,disable_web_page_preview:true})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok||d?.ok!==true)throw new Error(`Telegram HTTP ${r.status}: ${d?.description||"sendMessage failed"}`);
+  return {sent:true,messageId:d?.result?.message_id||null};
+}
+function supabaseConfig(){
+  return {
+    url:String(process.env.SUPABASE_URL||'').trim().replace(/\/+$/,''),
+    key:String(process.env.SUPABASE_KEY||process.env.SUPABASE_SERVICE_ROLE_KEY||'').trim()
+  };
+}
+async function supabaseTable(path,options={}){
+  const {url,key}=supabaseConfig();
+  if(!url||!key)return {available:false};
+  const r=await fetch(`${url}/rest/v1/${path}`,{...options,headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'return=representation',...(options.headers||{})}});
+  const text=await r.text(); let data=null; try{data=text?JSON.parse(text):null;}catch{}
+  if(!r.ok){
+    if(r.status===404||r.status===406||r.status===42703||r.status===42)return {available:false,status:r.status};
+    throw new Error(`Supabase HTTP ${r.status}: ${text.slice(0,500)}`);
+  }
+  return {available:true,data};
+}
+function alertRowToObject(row){
+  return {ticker:cleanTicker(row.ticker),splitDate:String(row.split_date||''),enabled:Boolean(row.enabled),drop:{enabled:Boolean(row.drop_enabled),mode:row.drop_mode==='price'?'price':'percent',value:row.drop_value==null?null:Number(row.drop_value)},short:{enabled:Boolean(row.short_enabled),value:row.short_value==null?null:Number(row.short_value)},rsi:{enabled:Boolean(row.rsi_enabled),value:row.rsi_value==null?null:Number(row.rsi_value),direction:row.rsi_direction==='above'?'above':'below'},updatedAt:row.updated_at||null};
+}
+function alertObjectToRow(email,a){
+  return {user_email:String(email).toLowerCase(),ticker:a.ticker,split_date:a.splitDate||null,enabled:Boolean(a.enabled),drop_enabled:Boolean(a.drop?.enabled),drop_mode:a.drop?.mode==='price'?'price':'percent',drop_value:a.drop?.value==null?null:Number(a.drop.value),short_enabled:Boolean(a.short?.enabled),short_value:a.short?.value==null?null:Number(a.short.value),rsi_enabled:Boolean(a.rsi?.enabled),rsi_value:a.rsi?.value==null?null:Number(a.rsi.value),rsi_direction:a.rsi?.direction==='above'?'above':'below',updated_at:new Date().toISOString()};
+}
+async function readAlerts(email){
+  const q=`user_alerts?select=*&user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&order=ticker.asc`;
+  const r=await supabaseTable(q);
+  if(r.available){const out={};for(const row of Array.isArray(r.data)?r.data:[]){const a=alertRowToObject(row);out[a.ticker]=a;}return out;}
+  return await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{};
+}
+async function upsertAlert(email,a){
+  const row=alertObjectToRow(email,a);
+  const r=await supabaseTable('user_alerts',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify(row)});
+  if(r.available)return true;
+  const all=await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{}; all[a.ticker]=a; await getDataStore().setJSON(keyFor(email,'settings'),all); return false;
+}
+async function deleteAlert(email,ticker){
+  const r=await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
+  if(r.available)return true;
+  const all=await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{}; delete all[ticker]; await getDataStore().setJSON(keyFor(email,'settings'),all); return false;
+}
+async function appendAlertHistory(email,event){
+  const row={user_email:String(email).toLowerCase(),ticker:event.ticker,alert_type:event.type,title:event.title,message:event.message,created_at:event.createdAt||new Date().toISOString(),payload:event};
+  const r=await supabaseTable('stock_alerts',{method:'POST',body:JSON.stringify(row)});
+  if(r.available)return true;
+  const history=await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[]; await getDataStore().setJSON(keyFor(email,'history'),[event,...history].slice(0,100)); return false;
+}
+async function readAlertHistory(email){
+  const q=`stock_alerts?select=*&user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&order=created_at.desc&limit=100`;
+  const r=await supabaseTable(q);
+  if(r.available)return (Array.isArray(r.data)?r.data:[]).map(x=>({ticker:x.ticker,type:x.alert_type,title:x.title,message:x.message,createdAt:x.created_at}));
+  return await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[];
+}
 export async function evaluateUserAlerts(email,records){
   const settings=await readAlerts(email); const state=await getDataStore().get(keyFor(email,'state'),{type:'json'}).catch(()=>null)||{};
   const history=await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[];
@@ -41,12 +105,12 @@ export async function evaluateUserAlerts(email,records){
     if(a.rsi?.enabled){ const v=Number(a.rsi.value), hit=a.rsi.direction==='above'?(Number.isFinite(rsi)&&rsi>=v):(Number.isFinite(rsi)&&rsi<=v); checks.push(['rsi',hit,`RSI ${rsi.toFixed(1)}`]); }
     for(const [type,hit,detail] of checks){ const sk=`${ticker}:${type}`; const prev=nextState[sk]||{}; const was=Boolean(prev.hit); if(hit&&!was){
         const title=`تنبيه ${ticker}`; const message=`${ticker}: ${detail}`;
-        try{ await sendOneSignal(email,title,message,{ticker,type}); }catch(e){ console.warn('OneSignal send failed',ticker,type,e.message); }
+        const users=await getUsers(); const user=users[String(email).toLowerCase()]; if(user?.telegramChatId){ try{ await sendTelegram(user.telegramChatId,`🔔 ${title}\n${message}`); }catch(e){ console.warn('Telegram send failed',ticker,type,e.message); } }
         fired.push({ticker,type,title,message,createdAt:new Date().toISOString()}); nextState[sk]={hit:true,updatedAt:new Date().toISOString()}; changed=true;
       } else if(!hit&&was){ nextState[sk]={hit:false,updatedAt:new Date().toISOString()}; changed=true; }
     }
   }
-  if(fired.length){const merged=[...fired,...history].slice(0,100);await getDataStore().setJSON(keyFor(email,'history'),merged);}
+  if(fired.length){for(const event of fired){await appendAlertHistory(email,event).catch(e=>console.warn('alert history save failed',e.message));}if(!fired.length)await getDataStore().setJSON(keyFor(email,'history'),[...fired,...history].slice(0,100));}
   if(changed)await getDataStore().setJSON(keyFor(email,'state'),nextState);
   return {fired};
 }
@@ -60,19 +124,26 @@ export async function runAlertSweep(){
   for(const email of Object.keys(users)){ const a=await readAlerts(email); if(!Object.keys(a).length)continue; usersChecked++; const r=await evaluateUserAlerts(email,records); fired+=r.fired.length; }
   return {ok:true,users:usersChecked,fired};
 }
+export async function createUserTelegramLink(email){
+  const users=await getUsers();
+  const user=users[String(email||"").toLowerCase()];
+  if(!user)return {linked:false,link:null};
+  if(user.telegramChatId)return {linked:true,chatId:String(user.telegramChatId),username:user.telegramUsername||null,link:null};
+  return {linked:false,link:await createTelegramLink(email)};
+}
+
 export default async function(request){
   try{
     const action=new URL(request.url).searchParams.get('action')||'settings'; const c=await currentUser(request);
-    if(action==='config') return json({ok:true,appId:String(process.env.ONESIGNAL_APP_ID||'')});
     if(!c?.user||c.blocked) return json({error:'غير مصرح. سجّل الدخول.'},401);
     const email=c.user.email;
     if(action==='settings'){
-      if(request.method==='GET') return json({ok:true,settings:await readAlerts(email)});
-      if(request.method==='POST'){ const b=await readJson(request); const a=cleanAlert(b); const all=await readAlerts(email); all[a.ticker]=a; await saveAlerts(email,all); return json({ok:true,settings:all}); }
-      if(request.method==='DELETE'){const b=await readJson(request);const ticker=cleanTicker(b.ticker);const all=await readAlerts(email);delete all[ticker];await saveAlerts(email,all);return json({ok:true,settings:all});}
+      if(request.method==='GET'){const settings=await readAlerts(email);return json({ok:true,settings,telegram:await createUserTelegramLink(email)});}
+      if(request.method==='POST'){const b=await readJson(request);const a=cleanAlert(b);await upsertAlert(email,a);return json({ok:true,settings:await readAlerts(email),telegram:await createUserTelegramLink(email)});}
+      if(request.method==='DELETE'){const b=await readJson(request);const ticker=cleanTicker(b.ticker);await deleteAlert(email,ticker);return json({ok:true,settings:await readAlerts(email)});}
     }
-    if(action==='history'){const h=await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[];return json({ok:true,items:h.slice(0,100)});}
-    if(action==='test'){const b=await readJson(request);const r=await sendOneSignal(email,'اختبار التنبيهات','تم تفعيل إشعارات الباحث بنجاح.',{test:true});return json({ok:true,...r});}
+    if(action==='history'){return json({ok:true,items:await readAlertHistory(email)});}
+    if(action==='telegram-link'){return json({ok:true,telegram:await createUserTelegramLink(email)});}
     return json({error:'إجراء غير مدعوم.'},405);
   }catch(e){return json({error:String(e?.message||e)},500);}
 }

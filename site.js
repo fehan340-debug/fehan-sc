@@ -34,55 +34,28 @@ async function responseJSON(r){
 }
 let stopped=false,paused=false,running=false,results=0,scanned=0,scanAbortController=null;
 let favoriteItems=[],favoriteRefreshTimer=null,favoriteRefreshing=false;
-let alertSettings={}, alertTickerCurrent="", oneSignalReady=false;
-async function initOneSignal(){
-  try{
-    const d=await getJSON('/.netlify/functions/alerts?action=config',0);
-    if(!d.appId || !window.OneSignalDeferred) return false;
-    if(!oneSignalReady){
-      window.OneSignalDeferred.push(async OneSignal=>{
-        try{await OneSignal.init({appId:d.appId,allowLocalhostAsSecureOrigin:true});oneSignalReady=true;if(window.currentUserEmail&&OneSignal.login)await OneSignal.login(window.currentUserEmail);}catch(e){console.warn('OneSignal init',e.message);}
-      });
-      for(let i=0;i<20&&!oneSignalReady;i++)await new Promise(r=>setTimeout(r,250));
-    }
-    const os=window.OneSignal;
-    if(!oneSignalReady||!os)return false;
-    if(window.currentUserEmail&&os.login){try{await os.login(window.currentUserEmail);}catch{}}
-    return true;
-  }catch(e){console.warn('OneSignal init',e.message);return false;}
-}
-async function ensureNotificationPermission(){
-  if(!('Notification' in window)){alert('هذا المتصفح لا يدعم إشعارات الويب.');return false;}
-  let permission=Notification.permission;
-  if(permission!=='granted') permission=await Notification.requestPermission();
-  if(permission!=='granted'){
-    $('alertPermissionNote').textContent='لم يتم السماح بالإشعارات. فعّل إشعارات الموقع من إعدادات المتصفح ثم أعد المحاولة.';
-    return false;
-  }
-  const ok=await initOneSignal();
-  if(!ok){$('alertPermissionNote').textContent='تم السماح بالإشعارات، لكن خدمة التنبيهات الخارجية غير مهيأة بعد.';return false;}
-  try{const os=window.OneSignal;if(os?.Notifications?.permission===false&&os.Notifications.requestPermission)await os.Notifications.requestPermission();if(os?.User?.PushSubscription?.optIn)await os.User.PushSubscription.optIn();if(window.currentUserEmail&&os?.login)await os.login(window.currentUserEmail);}catch(e){console.warn('OneSignal permission/subscription',e.message);}
-  $('alertPermissionNote').textContent='تم السماح بإشعارات الويب. يمكنك الآن حفظ التنبيه.';
-  return true;
-}
-async function loadAlertSettings(){try{const d=await getJSON('/.netlify/functions/alerts?action=settings');alertSettings=d.settings||{};}catch(e){console.warn('alerts settings',e.message);}}
+let alertSettings={}, alertTickerCurrent="", telegramState={linked:false,link:null};
+async function loadAlertSettings(){try{const d=await getJSON('/.netlify/functions/alerts?action=settings');alertSettings=d.settings||{};telegramState=d.telegram||{linked:false,link:null};renderTelegramLinkState();}catch(e){console.warn('alerts settings',e.message);}}
+function renderTelegramLinkState(){const status=$('telegramAlertStatus'),btn=$('telegramAlertLink'),modalBtn=$('telegramAlertLinkModal');if(telegramState?.linked){if(status)status.textContent='تم ربط حسابك بتليجرام.';[btn,modalBtn].forEach(x=>{if(x)x.style.display='none';});}else{if(status)status.textContent='يرجى ربط حسابك بتليجرام لتلقي التنبيهات فوراً على جوالك';[btn,modalBtn].forEach(x=>{if(x){x.style.display=telegramState?.link?'inline-flex':'none';if(telegramState?.link)x.href=telegramState.link;}});}}
 function updateAlertDropInput(){const mode=$('alertDropMode')?.value||'percent',input=$('alertDropValue');if(!input)return;input.placeholder=mode==='price'?'مثال: 4.20':'مثال: 5';input.step=mode==='price'?'0.01':'1';const suffix=$('alertDropSuffix');if(suffix)suffix.textContent=mode==='price'?'$':'%';}
 function openAlertModal(f){
   alertTickerCurrent=f.ticker; const a=alertSettings[f.ticker]||{};
   $('alertTicker').textContent=f.ticker; $('alertDropEnabled').checked=Boolean(a.drop?.enabled); $('alertDropMode').value=a.drop?.mode||'percent'; $('alertDropValue').value=a.drop?.value??'';
   $('alertShortEnabled').checked=Boolean(a.short?.enabled); $('alertShortValue').value=a.short?.value??'';
   $('alertRsiEnabled').checked=Boolean(a.rsi?.enabled); $('alertRsiDirection').value=a.rsi?.direction||'below'; $('alertRsiValue').value=a.rsi?.value??'';
-  updateAlertDropInput(); $('alertMsg').textContent=''; $('alertModal').classList.add('show'); ensureNotificationPermission();
+  updateAlertDropInput(); $('alertMsg').textContent=''; $('alertModal').classList.add('show');
 }
 async function saveAlertSettings(){
-  // Push is optional: the internal notification bell is always saved in the data store.
-  let pushReady=false;
-  try{pushReady=await ensureNotificationPermission();}catch{}
   const num=id=>{const v=String($(id)?.value??'').trim();return v===''?null:Number(v);};
   const payload={ticker:alertTickerCurrent,splitDate:(favoriteItems.find(x=>x.ticker===alertTickerCurrent)||{}).splitDate||'',enabled:true,drop:{enabled:$('alertDropEnabled').checked,mode:$('alertDropMode').value,value:num('alertDropValue')},short:{enabled:$('alertShortEnabled').checked,value:num('alertShortValue')},rsi:{enabled:$('alertRsiEnabled').checked,value:num('alertRsiValue'),direction:$('alertRsiDirection').value}};
   if(!payload.drop.enabled&&!payload.short.enabled&&!payload.rsi.enabled)payload.enabled=false;
   const btn=$('alertSave');if(btn)btn.disabled=true;$('alertMsg').textContent='جاري حفظ التنبيه...';
-  try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حفظ التنبيه.');alertSettings=d.settings||{};$('alertMsg').textContent=pushReady?'تم حفظ إعدادات التنبيه.':'تم حفظ إعدادات التنبيه داخل الجرس.';renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر حفظ التنبيه.';}finally{if(btn)btn.disabled=false;}
+  try{
+    const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حفظ التنبيه.');
+    alertSettings=d.settings||{};telegramState=d.telegram||telegramState;renderFavorites();renderTelegramLinkState();$('alertMsg').textContent=telegramState?.linked?'تم حفظ وتفعيل التنبيه.':'تم حفظ وتفعيل التنبيه. يرجى ربط حسابك بتليجرام لتلقي التنبيهات فوراً على جوالك.';
+  }catch(e){$('alertMsg').textContent=e.message||'تعذر حفظ التنبيه.';}
+  finally{if(btn)btn.disabled=false;}
 }
 async function disableAlert(){try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:alertTickerCurrent})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر إلغاء التنبيه.');alertSettings=d.settings||{};$('alertModal').classList.remove('show');renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر إلغاء التنبيه.';}}
 async function loadNotificationHistory(){try{const d=await getJSON('/.netlify/functions/alerts?action=history');const list=$('notificationList');if(!list)return;const items=d.items||[];$('notificationBadge')?.classList.toggle('hidden',!items.length);if($('notificationBadge'))$('notificationBadge').textContent=Math.min(items.length,99);list.innerHTML=items.length?items.map(x=>`<div class="testRow"><div><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لا توجد تنبيهات.</div>';}catch(e){console.warn('alert history',e.message)}}
@@ -559,7 +532,7 @@ async function loadMe(){
       if(r.status>=500){throw Error(d.error||`HTTP ${r.status}`);}
       if(!r.ok||!d.authenticated){localStorage.removeItem("scanner_session_hint");sessionKnown=false;sessionReady=false;applyMaintenanceState({siteMode:"normal"});document.body.classList.remove("session-ok");$("authOverlay").classList.remove("hidden");return false;}
       applyMaintenanceState({siteMode:"normal"});
-      sessionReady=true;localStorage.setItem("scanner_session_hint","1");sessionKnown=true;window.currentUserEmail=d.user?.email||"";loadAlertSettings();loadNotificationHistory();initOneSignal();document.body.classList.add("session-ok");await loadScannerSettings();loadFavorites();loadScannerCache().catch(()=>{});$("authOverlay").classList.add("hidden");showResearchNotice();loadMySupportReplies();
+      sessionReady=true;localStorage.setItem("scanner_session_hint","1");sessionKnown=true;window.currentUserEmail=d.user?.email||"";loadAlertSettings();loadNotificationHistory();document.body.classList.add("session-ok");await loadScannerSettings();loadFavorites();loadScannerCache().catch(()=>{});$("authOverlay").classList.add("hidden");showResearchNotice();loadMySupportReplies();
       const plan=(window.sitePricing?.plans||[]).find(x=>x.id===d.user.plan)?.label||d.user.plan||"—";
       const rem=d.user.expiresAt?Math.max(0,Math.ceil((new Date(d.user.expiresAt+"T23:59:59").getTime()-Date.now())/86400000)):null;
       $("infoEmail").textContent=d.user.email||d.user.username||"—";
@@ -780,6 +753,9 @@ async function saveBank(){
   try{const d=await saveAllSettings({bankName:$("adminBankName").value.trim(),bankBank:$("adminBankBank").value.trim(),bankAccount:$("adminBankAccount").value.trim(),bankIban:$("adminBankIban").value.trim(),telegram:window.sitePricing?.telegram||""});$("bankMsg").textContent="تم حفظ بيانات التحويل.";}catch(e){$("bankMsg").textContent=e.message||"تعذر حفظ بيانات التحويل."}
 }
 function updateTelegramLinks(url){const u=String(url||"").trim();["loginTelegram","requestTelegram"].forEach(id=>{const a=$(id);if(!a)return;if(u){a.href=u;a.style.display="block";}else{a.removeAttribute("href");a.style.display="none";}})}
+async function loadTelegramLink(){try{const d=await getJSON('/.netlify/functions/alerts?action=telegram-link');telegramState=d.telegram||{linked:false,link:null};renderTelegramLinkState();}catch(e){alert(e.message||'تعذر إنشاء رابط تليجرام.');}}
+async function setupTelegramWebhook(){const btn=$('setupTelegramWebhook'),msg=$('telegramWebhookMsg');if(!btn)return;btn.disabled=true;msg.textContent='جاري تفعيل ربط البوت...';try{const d=await adminAction('setup-telegram-webhook',{});msg.textContent=`تم تفعيل البوت: ${d.webhook}`;}catch(e){msg.textContent=e.message||'تعذر تفعيل Webhook.';}finally{btn.disabled=false;}}
+async function sendTelegramBroadcast(){const btn=$('telegramBroadcastBtn'),msg=$('telegramBroadcastMsg'),box=$('telegramBroadcastText');if(!box?.value.trim()){msg.textContent='اكتب الرسالة أولاً.';return;}btn.disabled=true;msg.textContent='جاري الإرسال لجميع المرتبطين بتليجرام...';try{const r=await apiFetch('/.netlify/functions/telegram-broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:box.value.trim()})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر الإرسال.');msg.textContent=`تم الإرسال بنجاح إلى ${d.sent||0} مشترك. فشل ${d.failed||0}.`; }catch(e){msg.textContent=e.message||'تعذر الإرسال الجماعي.';}finally{btn.disabled=false;}}
 async function saveTelegram(){
   try{await saveAllSettings({telegram:$("adminTelegram").value.trim(),bankName:$("adminBankName").value.trim(),bankBank:$("adminBankBank").value.trim(),bankAccount:$("adminBankAccount").value.trim(),bankIban:$("adminBankIban").value.trim()});$("telegramMsg").textContent="تم حفظ حساب التليجرام.";}catch(e){$("telegramMsg").textContent=e.message||"تعذر الحفظ."}
 }
@@ -993,8 +969,10 @@ async function triggerDailySplitUpdate(btn,msg){
 }
 async function triggerFloatUpdate(btn,msg){if(!btn||!msg)return;btn.disabled=true;msg.textContent="جاري تشغيل تحديث Free Float فقط…";try{const r=await apiFetch("/.netlify/functions/float-worker-manual",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Free Float (HTTP ${r.status}).`);msg.textContent="تم تشغيل تحديث Free Float في الخلفية. راجع الإحصائيات بعد اكتماله.";await sleep(1200);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تشغيل تحديث Free Float.";}finally{btn.disabled=false;}}
 async function triggerMassiveCurrentUpdate(btn,msg){
-  if(!btn||!msg)return; btn.disabled=true; msg.textContent="جاري تحديث الأسعار الحالية…";
-  try{const r=await apiFetch("/.netlify/functions/scanner-massive-current-worker",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Massive (HTTP ${r.status}).`);await pollRefreshStatus("massive",msg,60000);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تحديث Massive.";}finally{btn.disabled=false;}
+  if(!btn||!msg)return;btn.disabled=true;btn.dataset.busy='1';msg.textContent='جاري تشغيل تحديث الأسعار…';
+  try{const d=await adminAction('refresh-massive');if(!d?.ok)throw Error(d?.error||'تعذر تشغيل تحديث Massive.');msg.textContent='تم تشغيل تحديث الأسعار في الخلفية…';await pollRefreshStatus('massive',msg,60000);await loadSiteStats();}
+  catch(e){msg.textContent=e.message||'تعذر تشغيل تحديث Massive.';}
+  finally{btn.disabled=false;btn.dataset.busy='0';}
 }
 async function triggerCacheOnlyUpdate(btn,msg){
   return triggerSavedCacheUpdate(btn,msg);
@@ -1103,7 +1081,7 @@ setLoadSelected("scanner");
 
 // نظام التنبيهات والمفضلة
 $('alertClose')?.addEventListener('click',()=>$('alertModal').classList.remove('show'));
-$('alertSave')?.addEventListener('click',saveAlertSettings);
+$('alertSave')?.addEventListener('click',saveAlertSettings);$('telegramAlertLink')?.addEventListener('click',loadTelegramLink);$('telegramAlertLinkModal')?.addEventListener('click',loadTelegramLink);$('setupTelegramWebhook')?.addEventListener('click',setupTelegramWebhook);$('telegramBroadcastBtn')?.addEventListener('click',sendTelegramBroadcast);
 $('alertDisable')?.addEventListener('click',disableAlert);
 $('notificationBell')?.addEventListener('click',async()=>{$('notificationPanel').classList.add('show');await loadNotificationHistory();});
 $('notificationClose')?.addEventListener('click',()=>$('notificationPanel').classList.remove('show'));
