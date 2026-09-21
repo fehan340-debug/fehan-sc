@@ -75,12 +75,14 @@ function openAlertModal(f){
   updateAlertDropInput(); $('alertMsg').textContent=''; $('alertModal').classList.add('show'); ensureNotificationPermission();
 }
 async function saveAlertSettings(){
-  const ok=await ensureNotificationPermission();if(!ok)return;
+  // Push is optional: the internal notification bell is always saved in the data store.
+  let pushReady=false;
+  try{pushReady=await ensureNotificationPermission();}catch{}
   const num=id=>{const v=String($(id)?.value??'').trim();return v===''?null:Number(v);};
   const payload={ticker:alertTickerCurrent,splitDate:(favoriteItems.find(x=>x.ticker===alertTickerCurrent)||{}).splitDate||'',enabled:true,drop:{enabled:$('alertDropEnabled').checked,mode:$('alertDropMode').value,value:num('alertDropValue')},short:{enabled:$('alertShortEnabled').checked,value:num('alertShortValue')},rsi:{enabled:$('alertRsiEnabled').checked,value:num('alertRsiValue'),direction:$('alertRsiDirection').value}};
   if(!payload.drop.enabled&&!payload.short.enabled&&!payload.rsi.enabled)payload.enabled=false;
   const btn=$('alertSave');if(btn)btn.disabled=true;$('alertMsg').textContent='جاري حفظ التنبيه...';
-  try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حفظ التنبيه.');alertSettings=d.settings||{};$('alertMsg').textContent='تم حفظ إعدادات التنبيه.';renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر حفظ التنبيه.';}finally{if(btn)btn.disabled=false;}
+  try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حفظ التنبيه.');alertSettings=d.settings||{};$('alertMsg').textContent=pushReady?'تم حفظ إعدادات التنبيه.':'تم حفظ إعدادات التنبيه داخل الجرس.';renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر حفظ التنبيه.';}finally{if(btn)btn.disabled=false;}
 }
 async function disableAlert(){try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:alertTickerCurrent})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر إلغاء التنبيه.');alertSettings=d.settings||{};$('alertModal').classList.remove('show');renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر إلغاء التنبيه.';}}
 async function loadNotificationHistory(){try{const d=await getJSON('/.netlify/functions/alerts?action=history');const list=$('notificationList');if(!list)return;const items=d.items||[];$('notificationBadge')?.classList.toggle('hidden',!items.length);if($('notificationBadge'))$('notificationBadge').textContent=Math.min(items.length,99);list.innerHTML=items.length?items.map(x=>`<div class="testRow"><div><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لا توجد تنبيهات.</div>';}catch(e){console.warn('alert history',e.message)}}
@@ -143,6 +145,13 @@ function updateDataFreshness(){const el=$("dataFreshness");if(!el)return;el.text
 setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
+let cacheRefreshBusy=false;
+async function refreshScannerCacheInBackground(){
+  if(cacheRefreshBusy||document.hidden)return;
+  cacheRefreshBusy=true;
+  try{await loadScannerCache({force:true,maxAttempts:2});renderFavorites();}catch{}finally{cacheRefreshBusy=false;}
+}
+setInterval(refreshScannerCacheInBackground,120000);
 
 // Stocks Starter: one full-market snapshot per scan for current prices.
 let marketSnapshot=null;
@@ -408,7 +417,7 @@ function emaSeries(values,period){if(!Array.isArray(values)||values.length<perio
 function cciValue(bars,period=14){if(!Array.isArray(bars)||bars.length<period)return NaN;const tp=bars.map(b=>(Number(b.h)+Number(b.l)+Number(b.c))/3);const w=tp.slice(-period),mean=w.reduce((a,b)=>a+b,0)/period,dev=w.reduce((a,b)=>a+Math.abs(b-mean),0)/period;return dev===0?0:(tp[tp.length-1]-mean)/(0.015*dev);}
 function completedDailyBars(bars){const today=new Date().toISOString().slice(0,10);return (bars||[]).filter(b=>dateFromBar(b)&&dateFromBar(b)<today);}
 function dailyChange(current,raw,bars){const prev=Number(raw?.prevDay?.c);if(Number.isFinite(current)&&Number.isFinite(prev)&&prev!==0)return (current-prev)/prev*100;const done=completedDailyBars(bars);if(done.length<2)return NaN;const a=Number(done[done.length-1].c),b=Number(done[done.length-2].c);return Number.isFinite(a)&&Number.isFinite(b)&&b!==0?(a-b)/b*100:NaN;}
-function showTestLoading(f){$("testTitle").textContent="اختبار السهم — "+f.ticker;$("testRows").innerHTML='<div class="testRow"><span class="testLabel">الحالة</span><span class="testValue">جاري تحميل التفاصيل…</span></div>';$("testNote").textContent="تم فتح النافذة فورًا، وجاري جلب البيانات…";$("testModal").classList.add("show");}
+function showTestLoading(f){$("testTitle").textContent="اختبار السهم — "+f.ticker;$("testRows").innerHTML='<div class="testRow"><span class="testLabel">الحالة</span><span class="testValue">جاري تحميل التفاصيل…</span></div>';$("testNote").textContent="تم فتح النافذة فورًا، وجاري تجهيز البيانات…";$("testModal").classList.add("show");}
 function showDetailsLoading(f){$("detailsTitle").textContent="تفاصيل السهم — "+f.ticker;$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">الحالة</span><span class="testValue">جاري تحميل التفاصيل…</span></div>';$("detailsNote").textContent="تم فتح النافذة فورًا، وجاري تجهيز البيانات…";$("detailsModal").classList.add("show");}
 async function runFavoriteTest(f,tr){
  const btn=tr?.querySelector('.favTest');if(btn)btn.disabled=true;
@@ -483,9 +492,9 @@ async function loadIPOs(){
       if(!Number.isFinite(dt.getTime()))return false;
       return dt>=today&&dt<=end&&(ex==='ALL'||x.primary_exchange===ex);
     }).sort((a,b)=>String(a.listing_date).localeCompare(String(b.listing_date)));
-    if(!rows.length){$('ipoStatus').textContent=`لا توجد اكتتابات مؤكدة خلال ${days} أيام ضمن الـ Snapshot المحلي. آخر تحديث للبيانات: ${scannerCacheUpdatedAt?new Date(scannerCacheUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;return;}
+    if(!rows.length){$('ipoStatus').textContent=`لا توجد اكتتابات مؤكدة خلال ${days} أيام. آخر تحديث للبيانات: ${scannerCacheUpdatedAt?new Date(scannerCacheUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;return;}
     $('ipoResults').innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.issuer_name||x.security_description||'—')}</td><td>${escapeHtml(x.listing_date||'—')}</td><td>${Number(x.max_shares_offered||x.min_shares_offered||0)?Number(x.max_shares_offered||x.min_shares_offered).toLocaleString():'—'}</td><td>${x.lowest_offer_price!=null||x.highest_offer_price!=null?`$${fmt(x.lowest_offer_price)} — $${fmt(x.highest_offer_price)}`:'—'}</td><td>${x.total_offer_size!=null?Number(x.total_offer_size).toLocaleString():'—'}</td></tr>`).join('');
-    $('ipoStatus').textContent=`تم العثور على ${rows.length} اكتتاب${rows.length===1?'':'ات'} — من الـ Snapshot المحلي.`;
+    $('ipoStatus').textContent=`تم العثور على ${rows.length} اكتتاب${rows.length===1?'':'ات'}.`;
   }catch(e){$('ipoStatus').textContent='تعذر البحث في بيانات الاكتتابات: '+(e.message||'خطأ غير معروف');}
   finally{$('ipoRefresh').disabled=false;}
 }
@@ -945,11 +954,11 @@ async function pollRefreshStatus(kind,msg,maxMs=120000){
         msg.textContent="جاري تحديث قائمة التقسيم ثم إعادة بناء الكاش…";
       }else if(kind==="massive"){
         if(s.massiveCurrentStatus==="ready"){
-          msg.textContent=`اكتمل تحديث Massive الحالية. ${s.massiveCurrentRecords||0} سجل من كاش الباحث تم تحديثه (${s.massiveMarketTickers||0} سهم من السوق).`;
+          msg.textContent=`اكتمل تحديث الأسعار الحالية. ${s.massiveCurrentRecords||0} سجل من كاش الباحث تم تحديثه (${s.massiveMarketTickers||0} سهم من السوق).`;
           return true;
         }
         if(s.massiveCurrentStatus==="error"){msg.textContent=`فشل تحديث Massive: ${s.massiveCurrentError||"خطأ غير معروف"}`;return false;}
-        msg.textContent="جاري تحديث الأسعار الحالية من Massive…";
+        msg.textContent="جاري تحديث الأسعار الحالية…";
       }
     }catch{}
     await sleep(kind==="borrow"?1000:3000);
@@ -985,7 +994,7 @@ async function triggerDailySplitUpdate(btn,msg){
 async function triggerFloatUpdate(btn,msg){if(!btn||!msg)return;btn.disabled=true;msg.textContent="جاري تشغيل تحديث Free Float فقط…";try{const r=await apiFetch("/.netlify/functions/float-worker-manual",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Free Float (HTTP ${r.status}).`);msg.textContent="تم تشغيل تحديث Free Float في الخلفية. راجع الإحصائيات بعد اكتماله.";await sleep(1200);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تشغيل تحديث Free Float.";}finally{btn.disabled=false;}}
 async function triggerMassiveCurrentUpdate(btn,msg){
   if(!btn||!msg)return; btn.disabled=true; msg.textContent="جاري تحديث الأسعار الحالية…";
-  try{const r=await apiFetch("/.netlify/functions/scanner-massive-current-worker",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Massive (HTTP ${r.status}).`);await pollRefreshStatus("massive",msg,900000);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تحديث Massive.";}finally{btn.disabled=false;}
+  try{const r=await apiFetch("/.netlify/functions/scanner-massive-current-worker",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Massive (HTTP ${r.status}).`);await pollRefreshStatus("massive",msg,60000);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تحديث Massive.";}finally{btn.disabled=false;}
 }
 async function triggerCacheOnlyUpdate(btn,msg){
   return triggerSavedCacheUpdate(btn,msg);

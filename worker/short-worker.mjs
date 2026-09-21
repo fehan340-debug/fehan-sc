@@ -12,6 +12,14 @@ const finite=n=>Number.isFinite(Number(n))?Number(n):null;
 async function getJson(key){return await store.get(key);}
 async function setJson(key,value){await store.setJSON(key,value);}
 
+async function publishShortOverlay(ticker,b,stamp){
+  const key='scanner-short-overlay-v1';
+  const current=await getJson(key);
+  const records=current?.records&&typeof current.records==='object'?{...current.records}:{};
+  records[ticker]={ticker,shares:finite(b?.shares),fee:finite(b?.fee),updatedAt:b?.updatedAt||stamp,source:b?.source||null,state:'ready'};
+  await setJson(key,{version:1,updatedAt:stamp,records});
+}
+
 function supportedExchange(value){return ['XNAS','XNYS','XASE'].includes(String(value||'').toUpperCase());}
 
 async function instantPublish(ticker,b,stamp){
@@ -134,8 +142,10 @@ async function processTicker(job,ticker){
   // Persist each successful result immediately in Supabase progress storage.
   // Missing borrow data is a normal skip and never aborts the remaining cycle.
   if(shortOk){
-    try{await instantPublish(ticker,{...value,updatedAt:stamp},stamp);}
-    catch(publishError){console.warn('[external-short-worker] immediate publish failed',{ticker,error:String(publishError?.message||publishError)});}
+    try{
+      await instantPublish(ticker,{...value,updatedAt:stamp},stamp);
+      await publishShortOverlay(ticker,{...value,updatedAt:stamp},stamp);
+    }catch(publishError){console.warn('[external-short-worker] immediate publish failed',{ticker,error:String(publishError?.message||publishError)});}
   }
   await setJson(JOB_KEY,job);
   const doneUnique=job.tickers.filter(t=>['ready','previous','unavailable'].includes(job.records[t]?.state)).length;
