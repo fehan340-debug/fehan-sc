@@ -27,6 +27,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SUPABASE_TABLE: scanner_worker_store
+      FORCE_FLOAT_RUN: ${{ github.event.inputs.source == 'manual-admin-float-only' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
