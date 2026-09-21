@@ -1,4 +1,4 @@
-name: Daily Finviz Free Float Worker
+name: Scrape Free Float Data
 
 on:
   workflow_dispatch:
@@ -11,6 +11,8 @@ on:
         description: Trigger timestamp
         required: false
         default: ""
+  schedule:
+    - cron: '0 0 * * *'
 
 concurrency:
   group: nasdaq-daily-float-worker
@@ -31,16 +33,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-      - name: Setup Node 24
+
+      - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: '20'
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+
       - name: Validate required secrets
         run: |
           test -n "$SCRAPINGANT_API_KEY" || (echo "Missing SCRAPINGANT_API_KEY" && exit 1)
           test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
           test -n "$SUPABASE_KEY" || (echo "Missing SUPABASE_KEY" && exit 1)
+          echo "Free Float and Supabase secrets are present."
+
       - name: Run daily Finviz float worker
         run: node worker/float-worker.mjs
