@@ -16,7 +16,7 @@ export default async function(request){
     const body=await readJson(request);const message=String(body?.message||'').trim();
     if(!message)return json({error:'اكتب الرسالة أولاً.'},400);
     const users=await getUsers();
-    const recipients=Object.values(users).filter(u=>u&&!u.admin&&u.status==='active'&&u.telegramChatId);
+    const recipients=Object.values(users).filter(u=>u&&u.telegramChatId&&(u.admin || u.status==='active'));
     let sent=0,failed=0;const failures=[];
     for(const u of recipients){
       try{await sendTelegram(u.telegramChatId,message);sent++;}

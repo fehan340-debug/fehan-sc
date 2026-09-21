@@ -1,4 +1,4 @@
-import { json,readJson,cookieMap,setSessionCookie,clearSessionCookie,randomToken,getUsers,verifyPassword,saveUsers,currentUser,safeUser,deviceFrom,ensureAdmin,getSiteSettings,getFavorites,saveFavorites,getUserSettingsStore,getSessionStore } from "../../lib.js";
+import { json,readJson,cookieMap,setSessionCookie,setDeviceCookie,clearSessionCookie,randomToken,getUsers,verifyPassword,saveUsers,currentUser,safeUser,deviceCandidatesFrom,ensureAdmin,getSiteSettings,getFavorites,saveFavorites,getUserSettingsStore,getSessionStore } from "../../lib.js";
 export default async function(request){
   try{
     await ensureAdmin();
@@ -81,10 +81,28 @@ export default async function(request){
       const isAdmin=u.admin===true || username===(process.env.ADMIN_EMAIL||"").trim().toLowerCase();
       const site=await getSiteSettings();
       if(!isAdmin && site.siteMode!=="normal") return json({maintenance:true,mode:site.siteMode,message:site.siteModeMessage||"الموقع متوقف مؤقتًا، الرجاء المحاولة لاحقًا."},503);
-      const dev=deviceFrom(request);
+      const devs=deviceCandidatesFrom(request);
       if(!isAdmin){
-        if(u.deviceId && dev && u.deviceId!==dev) return json({error:"هذا الحساب مرتبط بجهاز آخر."},403);
-        if(!u.deviceId && dev){u.deviceId=dev;users[username]=u;await saveUsers(users);}
+        // A valid session on this browser is stronger evidence than a regenerated
+        // localStorage/device header. Safari/iOS can recreate browser storage while
+        // keeping the login session. In that case repair the binding instead of
+        // falsely reporting that the account belongs to another device.
+        const existingSession=cookieMap(request).scanner_session;
+        let sameBrowserSession=null;
+        if(existingSession){
+          sameBrowserSession=await getSessionStore().get(`session:${existingSession}`,{type:'json',consistency:'strong'}).catch(()=>null);
+          if(sameBrowserSession?.email && String(sameBrowserSession.email).toLowerCase()!==username) sameBrowserSession=null;
+        }
+        if(u.deviceId && devs.length && !devs.includes(String(u.deviceId))){
+          if(sameBrowserSession?.deviceId){
+            u.deviceId=String(sameBrowserSession.deviceId);
+            users[username]=u;
+            await saveUsers(users);
+          }else{
+            return json({error:"هذا الحساب مرتبط بجهاز آخر."},403);
+          }
+        }
+        if(!u.deviceId && devs.length){u.deviceId=devs[0];users[username]=u;await saveUsers(users);}
       }
       const now=new Date().toISOString();
       // Mark the account as having completed at least one successful login.
@@ -94,8 +112,10 @@ export default async function(request){
       users[username]=u;
       await saveUsers(users);
       const token=randomToken();
-      await getSessionStore().setJSON(`session:${token}`,{email:username,createdAt:now,expiresAt:new Date(Date.now()+2592000000).toISOString()});
-      return json({ok:true,user:safeUser(u)},200,{"set-cookie":setSessionCookie(token)});
+      await getSessionStore().setJSON(`session:${token}`,{email:username,deviceId:u.deviceId||null,createdAt:now,expiresAt:new Date(Date.now()+2592000000).toISOString()});
+      const cookieHeaders=[setSessionCookie(token)];
+      if(!isAdmin && u.deviceId) cookieHeaders.push(setDeviceCookie(u.deviceId));
+      return json({ok:true,user:safeUser(u),deviceId:u.deviceId||null},200,{"set-cookie":cookieHeaders});
     }
     if(action==="logout"){
       const t=cookieMap(request).scanner_session;if(t) await getSessionStore().delete(`session:${t}`);

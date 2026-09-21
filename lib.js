@@ -74,7 +74,11 @@ export const getSiteSettingsStore=()=>makeStore(TABLES.siteSettings);
 export const getAttachmentStore=()=>makeStore(TABLES.attachments);
 
 export function json(data,status=200,extra={}) {
-  const headers = {"content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...extra};
+  const headers = new Headers({"content-type":"application/json; charset=utf-8", "cache-control":"no-store"});
+  for(const [k,v] of Object.entries(extra||{})){
+    if(k.toLowerCase()==="set-cookie" && Array.isArray(v)){ for(const item of v) headers.append("set-cookie",String(item)); }
+    else headers.set(k,String(v));
+  }
   return new Response(JSON.stringify(data), { status, headers });
 }
 
@@ -112,7 +116,22 @@ export function makePasswordRecord(password){
 }
 export function randomToken(){return crypto.randomBytes(32).toString("hex");}
 
-export function deviceFrom(request){return request.headers.get("x-device-id")||"";}
+export function deviceFrom(request){
+  const header=String(request.headers.get("x-device-id")||"").trim();
+  if(header)return header;
+  const c=cookieMap(request);
+  return String(c.scanner_device_id||"").trim();
+}
+export function deviceCandidatesFrom(request){
+  const out=[];
+  const h=String(request.headers.get("x-device-id")||"").trim();
+  const c=String(cookieMap(request).scanner_device_id||"").trim();
+  for(const v of [h,c]) if(v && !out.includes(v)) out.push(v);
+  return out;
+}
+export function setDeviceCookie(deviceId){
+  return `scanner_device_id=${encodeURIComponent(String(deviceId||""))}; Path=/; Secure; SameSite=Lax; Max-Age=31536000`;
+}
 
 export async function getUsers(){ return await getUserStore().get("users",{type:"json"}) || {}; }
 export async function saveUsers(u){ await getUserStore().setJSON("users",u); }
@@ -182,10 +201,10 @@ export async function currentUser(request){
   const users=await getUsers(), u=users[s.email];
   if(!u || u.status!=="active") return null;
   const isAdmin=u.admin===true || s.email===(process.env.ADMIN_EMAIL||"").trim().toLowerCase();
-  const dev=deviceFrom(request);
+  const devs=deviceCandidatesFrom(request);
   if(!isAdmin){
-    if(!u.deviceId && dev){u.deviceId=dev;users[s.email]=u;await saveUsers(users);}
-    if(u.deviceId && dev && u.deviceId!==dev) return {blocked:true,user:u};
+    if(!u.deviceId && devs.length){u.deviceId=devs[0];users[s.email]=u;await saveUsers(users);}
+    if(u.deviceId && devs.length && !devs.includes(String(u.deviceId))) return {blocked:true,user:u};
   }
   if(u.expiresAt && Date.now()>new Date(u.expiresAt).getTime()) return null;
   if(!isAdmin){

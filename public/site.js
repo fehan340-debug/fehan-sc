@@ -14,7 +14,8 @@ initTheme();
 let sessionReady=false;
 let sessionKnown=localStorage.getItem("scanner_session_hint")==="1";
 let maintenanceActive=false;
-function deviceId(){let k="scanner_device_id";let v=localStorage.getItem(k);if(!v){v=crypto.randomUUID?crypto.randomUUID():(Date.now()+"-"+Math.random());localStorage.setItem(k,v)}return v}
+function readDeviceCookie(){const m=document.cookie.match(/(?:^|; )scanner_device_id=([^;]+)/);return m?decodeURIComponent(m[1]):"";}
+function deviceId(){let k="scanner_device_id";let cookie=readDeviceCookie();let v=cookie||localStorage.getItem(k);if(!v){v=crypto.randomUUID?crypto.randomUUID():(Date.now()+"-"+Math.random());}try{localStorage.setItem(k,v);}catch{}return v}
 async function apiFetch(url,opt={}){
   opt.headers=Object.assign({"X-Device-ID":deviceId()},opt.headers||{});
   const fullUrl=new URL(url,window.location.origin).toString();
@@ -58,6 +59,30 @@ async function saveAlertSettings(){
   finally{if(btn)btn.disabled=false;}
 }
 async function disableAlert(){try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:alertTickerCurrent})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر إلغاء التنبيه.');alertSettings=d.settings||{};$('alertModal').classList.remove('show');renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر إلغاء التنبيه.';}}
+async function openNotificationBell(){
+  const panel=$('notificationPanel');
+  const setup=$('telegramFirstSetup');
+  const list=$('notificationList');
+  if(!panel)return;
+  panel.classList.add('show');
+  try{
+    const d=await getJSON('/.netlify/functions/alerts?action=telegram-link');
+    telegramState=d.telegram||{linked:false,link:null};
+    renderTelegramLinkState();
+    if(setup){
+      if(telegramState.linked){
+        setup.style.display='none';
+      }else{
+        setup.style.display='block';
+        const link=$('telegramFirstSetupLink');
+        if(link){link.href=telegramState.link||'#';link.style.display=telegramState.link?'inline-flex':'none';}
+      }
+    }
+    await loadNotificationHistory();
+  }catch(e){
+    if(list)list.innerHTML=`<div class="small">تعذر تجهيز ربط التنبيهات الآن. حاول مرة أخرى.</div>`;
+  }
+}
 async function loadNotificationHistory(){try{const d=await getJSON('/.netlify/functions/alerts?action=history');const list=$('notificationList');if(!list)return;const items=d.items||[];$('notificationBadge')?.classList.toggle('hidden',!items.length);if($('notificationBadge'))$('notificationBadge').textContent=Math.min(items.length,99);list.innerHTML=items.length?items.map(x=>`<div class="testRow"><div><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لا توجد تنبيهات.</div>';}catch(e){console.warn('alert history',e.message)}}
 
 const $=id=>document.getElementById(id);
@@ -582,6 +607,7 @@ $("loginBtn").onclick=async()=>{
       throw Error(d.error||`فشل الدخول (${r.status})`);
     }
     if(!d.ok) throw Error(d.error||"تعذر تسجيل الدخول.");
+    if(d.deviceId){try{localStorage.setItem("scanner_device_id",String(d.deviceId));}catch{}}
     localStorage.setItem("scanner_session_hint","1"); sessionKnown=true;
     $("loginMsg").textContent="تم الدخول.";await loadMe();
   }catch(e){$("loginMsg").textContent=e.message||"تعذر تسجيل الدخول."}
@@ -1083,7 +1109,7 @@ setLoadSelected("scanner");
 $('alertClose')?.addEventListener('click',()=>$('alertModal').classList.remove('show'));
 $('alertSave')?.addEventListener('click',saveAlertSettings);$('telegramAlertLink')?.addEventListener('click',loadTelegramLink);$('telegramAlertLinkModal')?.addEventListener('click',loadTelegramLink);$('setupTelegramWebhook')?.addEventListener('click',setupTelegramWebhook);$('telegramBroadcastBtn')?.addEventListener('click',sendTelegramBroadcast);
 $('alertDisable')?.addEventListener('click',disableAlert);
-$('notificationBell')?.addEventListener('click',async()=>{$('notificationPanel').classList.add('show');await loadNotificationHistory();});
+$('notificationBell')?.addEventListener('click',openNotificationBell);
 $('notificationClose')?.addEventListener('click',()=>$('notificationPanel').classList.remove('show'));
 $('notificationPanel')?.addEventListener('click',e=>{if(e.target===$('notificationPanel'))$('notificationPanel').classList.remove('show')});
 // التشغيل الأول للحسابات

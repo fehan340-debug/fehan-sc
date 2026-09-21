@@ -22,7 +22,7 @@ export default async function(request){
     if(!chat?.id)return new Response('ok',{status:200});
     if(/^\/start(?:@\w+)?(?:\s+(.+))?$/i.test(text)){
       const token=text.match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i)?.[1]?.trim();
-      if(!token){await sendTelegram(chat.id,'مرحبًا بك في الباحث العجيب. افتح رابط الربط من داخل حسابك في الموقع لإكمال ربط التنبيهات.');return new Response('ok');}
+      if(!token){await sendTelegram(chat.id,'مرحبًا بك في The Short Scope. افتح رابط الربط من داخل حسابك في الموقع لإكمال ربط التنبيهات.');return new Response('ok');}
       const link=await getDataStore().get(`telegram-link:${token}`,{type:'json'}).catch(()=>null);
       if(!link?.email || !link.expiresAt || Date.now()>new Date(link.expiresAt).getTime()){
         await sendTelegram(chat.id,'رابط الربط منتهي أو غير صالح. ارجع للموقع واضغط «ربط التنبيهات عبر تليجرام» للحصول على رابط جديد.');
@@ -33,8 +33,9 @@ export default async function(request){
       if(!users[email]){await sendTelegram(chat.id,'تعذر العثور على حسابك في الموقع.');return new Response('ok');}
       users[email]={...users[email],telegramChatId:String(chat.id),telegramUsername:chat.from?.username||null,telegramFirstName:chat.from?.first_name||null,telegramLinkedAt:new Date().toISOString()};
       await saveUsers(users);
+      await getDataStore().setJSON(`telegram-subscriber:${email}`,{email,chatId:String(chat.id),linkedAt:new Date().toISOString(),admin:Boolean(users[email]?.admin)}).catch(()=>{});
       await getDataStore().delete(`telegram-link:${token}`).catch(()=>{});
-      await sendTelegram(chat.id,'تم ربط حسابك في الباحث العجيب بتليجرام بنجاح. ستصلك تنبيهات الأسهم هنا عند تحقق الشروط.');
+      await sendTelegram(chat.id,'تم ربط حسابك في The Short Scope بتليجرام بنجاح. ستصلك تنبيهات الأسهم هنا عند تحقق الشروط.');
     }
     return new Response('ok',{status:200});
   }catch(e){console.error('telegram webhook',e);return new Response('ok',{status:200});}

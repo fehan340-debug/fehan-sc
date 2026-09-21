@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { json,readJson,getUsers,saveUsers,getRequests,saveRequests,makePasswordRecord,safeUser,randomToken,currentUser,cookieMap,getDataStore,getSiteSettings,saveSiteSettings,getSessionStore } from "../../lib.js";
+import { dispatchMassiveWorker } from "./massive-worker-trigger.mjs";
 export default async function(request){
   try{
     const c=await currentUser(request); if(!c?.user?.admin)return json({error:"غير مصرح."},403);

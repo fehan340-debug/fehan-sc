@@ -1,0 +1,10 @@
+{
+  "name": "The Short Scope",
+  "short_name": "The Short Scope",
+  "start_url": "/scanner",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "background_color": "#f5f6f8",
+  "theme_color": "#111111"
+}

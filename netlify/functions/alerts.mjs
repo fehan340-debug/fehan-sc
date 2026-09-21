@@ -110,7 +110,7 @@ export async function evaluateUserAlerts(email,records){
       } else if(!hit&&was){ nextState[sk]={hit:false,updatedAt:new Date().toISOString()}; changed=true; }
     }
   }
-  if(fired.length){for(const event of fired){await appendAlertHistory(email,event).catch(e=>console.warn('alert history save failed',e.message));}if(!fired.length)await getDataStore().setJSON(keyFor(email,'history'),[...fired,...history].slice(0,100));}
+  if(fired.length){let savedAny=false;for(const event of fired){const saved=await appendAlertHistory(email,event).catch(e=>{console.warn('alert history save failed',e.message);return false;});savedAny=savedAny||saved;}if(!savedAny)await getDataStore().setJSON(keyFor(email,'history'),[...fired,...history].slice(0,100));}
   if(changed)await getDataStore().setJSON(keyFor(email,'state'),nextState);
   return {fired};
 }
@@ -128,7 +128,10 @@ export async function createUserTelegramLink(email){
   const users=await getUsers();
   const user=users[String(email||"").toLowerCase()];
   if(!user)return {linked:false,link:null};
-  if(user.telegramChatId)return {linked:true,chatId:String(user.telegramChatId),username:user.telegramUsername||null,link:null};
+  if(user.telegramChatId){
+    await getDataStore().setJSON(`telegram-subscriber:${String(email).toLowerCase()}`,{email:String(email).toLowerCase(),chatId:String(user.telegramChatId),linkedAt:user.telegramLinkedAt||null,admin:Boolean(user.admin)}).catch(()=>{});
+    return {linked:true,chatId:String(user.telegramChatId),username:user.telegramUsername||null,link:null};
+  }
   return {linked:false,link:await createTelegramLink(email)};
 }
 
