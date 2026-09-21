@@ -9,7 +9,7 @@
   node_bundler = "esbuild"
 
 # Automation lanes:
-# - Massive technical + live prices: every 10 minutes on weekdays.
+# - Massive technical + live prices: every 5 minutes on weekdays.
 # - Short/borrow: starts at minute 30 and publishes at the next top of the hour.
 # - Stock Splits (rolling 100 days) + Finviz Free Float: once daily at 09:30 America/New_York.
 # - IPO snapshot: once daily.

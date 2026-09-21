@@ -61,6 +61,16 @@ export async function refreshIpoCache(){
     console.info('[ipo-refresh] scraped=',rows.length,'saved=',records.length);
     const payload={version:1,source:'massive-ipo-daily',ready:true,updatedAt,windowDays:90,records};
     await store.setJSON('scanner-ipo-v1',payload);
+    // Publish the freshly saved IPO snapshot into the customer cache immediately
+    // instead of waiting for the next 5-minute technical refresh.
+    const pointer=await store.get('scanner-cache-pointer-v2').catch(()=>null);
+    const central=(pointer?.key?await store.get(pointer.key).catch(()=>null):null)||await store.get('scanner-cache-v1').catch(()=>null);
+    if(central?.ready&&Array.isArray(central.records)){
+      const merged={...central,records:central.records,ipos:records,ipoUpdatedAt:updatedAt,updatedAt:central.updatedAt||updatedAt};
+      await store.setJSON('scanner-cache-v1',merged);
+      await store.setJSON('scanner-central-cache-v1',merged);
+      await store.setJSON('scanner-cache-pointer-v2',{version:2,key:'scanner-cache-v1',updatedAt:merged.updatedAt,records:merged.records.length,ipoUpdatedAt:updatedAt});
+    }
     await store.setJSON('scanner-ipo-status',{state:'ready',startedAt:null,finishedAt:updatedAt,error:null,records:records.length,updatedAt});
     return payload;
   }catch(e){

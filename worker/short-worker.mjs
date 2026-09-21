@@ -29,8 +29,7 @@ function supportedExchange(value){return ['XNAS','XNYS','XASE'].includes(String(
 
 async function instantPublish(ticker,b,stamp){
   // Persist progress continuously in Supabase without publishing a partial
-  // customer snapshot. The completed short snapshot is still published at the
-  // top of the hour by finish().
+  // customer snapshot. The completed short snapshot is published immediately by finish().
   const key='scanner-borrow-progress-v1';
   const base=await getJson(key);
   const records=base?.records&&typeof base.records==='object'?{...base.records}:{};
@@ -53,8 +52,8 @@ async function finish(job,stamp){
   await setJson('scanner-borrow-v1',payload);
   await setJson('scanner-borrow-v2',payload);
   // Publish the completed short snapshot into the same market snapshot that the
-  // browser reads. This happens once at the top of the hour, not once per ticker,
-  // so customers never see a half-written short dataset.
+  // browser reads immediately after the full scrape completes, not at the next
+  // hour, so the newest complete short dataset becomes customer-visible at once.
   const central=await getJson('scanner-cache-v1');
   if(central?.ready&&Array.isArray(central.records)){
     const shortMap=job.records||{};
@@ -88,7 +87,10 @@ async function createJob(trigger){
   const records=previous?.records&&typeof previous.records==='object'?{...previous.records}:{};
   const exchangeByTicker=Object.fromEntries(tickers.map(t=>[t,String(universe?.references?.[t]?.primary_exchange||'').toUpperCase()]));
   const now=new Date().toISOString();
-  const job={active:true,engineVersion:ENGINE_VERSION,jobId:crypto.randomUUID(),triggerSource:trigger?.source||'external-worker',startedAt:now,tickers,exchangeByTicker,cursor:0,attempted:0,successful:0,failed:0,records,universeUpdatedAt:universe?.updatedAt||null,total:tickers.length,lastActivityAt:now,publishAt:(String(trigger?.source||'').startsWith('manual-') || String(process.env.FORCE_SHORT_PUBLISH||'').toLowerCase()==='true')?now:new Date(Math.ceil(Date.now()/3600000)*3600000).toISOString()};
+  // Publish the completed snapshot as soon as this worker finishes.
+  // The scheduler controls when the job starts; it must not delay publication
+  // until the next hour after the scrape has already completed.
+  const job={active:true,engineVersion:ENGINE_VERSION,jobId:crypto.randomUUID(),triggerSource:trigger?.source||'external-worker',startedAt:now,tickers,exchangeByTicker,cursor:0,attempted:0,successful:0,failed:0,records,universeUpdatedAt:universe?.updatedAt||null,total:tickers.length,lastActivityAt:now,publishAt:now};
   await setJson(JOB_KEY,job);
   await setJson(STATUS_KEY,{state:'building',jobId:job.jobId,startedAt:now,finishedAt:null,error:null,total:job.total,done:0,attempts:0,successful:0,failed:0,records:Object.keys(records).length,phase:'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions'});
   return job;

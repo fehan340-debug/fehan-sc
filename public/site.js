@@ -475,7 +475,7 @@ async function refreshFavoriteData(full=true){
     if(full)await loadScannerCache({force:true,maxAttempts:3});
     await loadCurrentPrices();
     let done=0;
-    for(const f of favoriteItems){const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));if(!tr)continue;const x=cacheFind(f);if(!x)continue;tr.querySelector('.fv-price').textContent=Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'—';tr.querySelector('.fv-change').textContent=Number.isFinite(Number(x.changePct))?(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%':'—';tr.querySelector('.fv-short').textContent=Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'—';tr.querySelector('.fv-fee').textContent=Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'—';tr.querySelector('.fv-float').textContent=formatCompactShares(x.freeFloat);done++;}
+    for(const f of favoriteItems){const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));if(!tr)continue;const x=cacheFind(f);if(!x)continue;const oldPrice=tr.querySelector('.fv-price').textContent,oldChange=tr.querySelector('.fv-change').textContent,oldShort=tr.querySelector('.fv-short').textContent,oldFee=tr.querySelector('.fv-fee').textContent,oldFloat=tr.querySelector('.fv-float').textContent;const price=displayPrice(x);if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);if(Number.isFinite(Number(x.changePct)))tr.querySelector('.fv-change').textContent=(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%';if(Number.isFinite(Number(x.shortShares)))tr.querySelector('.fv-short').textContent=Number(x.shortShares).toLocaleString();if(Number.isFinite(Number(x.borrowFee)))tr.querySelector('.fv-fee').textContent=fmt(x.borrowFee,2)+'%';const ff=formatCompactShares(x.freeFloat);if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;done++;}
     $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${cacheAgeText()}`;
   }catch(e){$('favoritesStatus').textContent='تعذر تحديث المفضلة: '+(e.message||'خطأ');} finally{favoriteRefreshing=false;}
 }
@@ -768,7 +768,7 @@ async function saveAutoUpdate(){
     window.sitePricing=d.pricing;
     const actual=(d.pricing.auto_update_enabled!==undefined?d.pricing.auto_update_enabled:d.pricing.autoUpdateEnabled)!==false;
     $("autoUpdateToggle").checked=actual;
-    msg.textContent=actual?"تم تفعيل التحديث التلقائي. سيعمل جدول Massive كل 10 دقائق والشورت مرة كل ساعة.":"تم إيقاف التحديث التلقائي بالكامل. لن تبدأ أي جدولة جديدة، والتحديثات اليدوية تبقى مستقلة.";
+    msg.textContent=actual?"تم تفعيل التحديث التلقائي. سيعمل التحديث الفني والأسعار كل 5 دقائق، والشورت حسب جدول التشغيل ثم يُنشر فور اكتماله.":"تم إيقاف التحديث التلقائي بالكامل. لن تبدأ أي جدولة جديدة، والتحديثات اليدوية تبقى مستقلة.";
   }catch(e){msg.textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}finally{btn.disabled=false;}
 }
 if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;$("alertDropMode")?.addEventListener("change",updateAlertDropInput);
