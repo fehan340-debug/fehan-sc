@@ -52,11 +52,12 @@ async function getSnapshot(tickers){
 function choosePrice(x,session,now){
   const prevClose=Number(x?.prevDay?.c);
   const dayClose=Number(x?.day?.c);
+  const officialClose=session==='regular' ? (Number.isFinite(prevClose)&&prevClose>0?prevClose:null) : (Number.isFinite(dayClose)&&dayClose>0?dayClose:(Number.isFinite(prevClose)&&prevClose>0?prevClose:null));
   const lastTrade=Number.isFinite(Number(x?.lastTrade?.p))&&Number(x.lastTrade.p)>0?Number(x.lastTrade.p):null;
   const lastTradeSess=tradeSession(x?.lastTrade?.t,now);
   const afterPrice=Number(x?.afterHours?.p);
   const prePrice=Number(x?.preMarket?.p);
-  const regularPrice=Number(x?.lastTrade?.p);
+  const regularPrice=officialClose;
   const valid=v=>Number.isFinite(v)&&v>0?v:null;
   const after=valid(afterPrice);
   const pre=valid(prePrice);
@@ -85,7 +86,7 @@ function choosePrice(x,session,now){
   }else{
     if(after!=null){price=after;source='afterHours';}
     else if(pre!=null){price=pre;source='preMarket';}
-    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
+    else if(regular!=null){price=regular;source='regularClose';}
   }
   if(!Number.isFinite(price)||price<=0)return null;
   const changeRaw=Number(x?.todaysChangePerc);

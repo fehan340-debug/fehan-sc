@@ -33,6 +33,10 @@ export default async function(request){
       }
       const renewal=Boolean(b.renewal);
       if(c?.maintenance)return json({maintenance:true,mode:c.siteMode||"maintenance",message:c.siteModeMessage||"الموقع متوقف مؤقتًا، الرجاء المحاولة لاحقًا."},503);
+      if(!renewal){
+        const pricingGate=await getSiteSettings();
+        if(pricingGate.subscriptionRequestsEnabled===false)return json({error:"طلبات الاشتراك متوقفة حاليًا."},403);
+      }
       if(renewal && !c?.user)return json({error:"يجب تسجيل الدخول لإرسال طلب تجديد."},401);
       if(!b.name||!b.contact||!b.plan)return json({error:"أكمل بيانات الطلب."},400);
       const pricing=await getSiteSettings(); const selectedPlan=pricing.plans.find(p=>p.id===String(b.plan||""));

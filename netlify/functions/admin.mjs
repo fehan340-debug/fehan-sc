@@ -33,7 +33,13 @@ export default async function(request){
       const current=await getSiteSettings();
       const mode=["normal","maintenance","development"].includes(String(b.siteMode))?String(b.siteMode):current.siteMode;
       const defaultMsg=mode==="maintenance"?"الموقع تحت الصيانة مؤقتًا، الرجاء المحاولة لاحقًا.":mode==="development"?"الموقع تحت التطوير حاليًا، الرجاء المحاولة لاحقًا.":"";
-      return json({ok:true,pricing:await saveSiteSettings({siteMode:mode,siteModeMessage:String(b.siteModeMessage||defaultMsg).trim(),autoUpdateEnabled:b.autoUpdateEnabled!==undefined?Boolean(b.autoUpdateEnabled):(b.auto_update_enabled!==undefined?Boolean(b.auto_update_enabled):current.autoUpdateEnabled),auto_update_enabled:b.auto_update_enabled!==undefined?Boolean(b.auto_update_enabled):(b.autoUpdateEnabled!==undefined?Boolean(b.autoUpdateEnabled):current.auto_update_enabled)})});
+      return json({ok:true,pricing:await saveSiteSettings({
+        siteMode:mode,
+        siteModeMessage:String(b.siteModeMessage||defaultMsg).trim(),
+        autoUpdateEnabled:b.autoUpdateEnabled!==undefined?Boolean(b.autoUpdateEnabled):(b.auto_update_enabled!==undefined?Boolean(b.auto_update_enabled):current.autoUpdateEnabled),
+        auto_update_enabled:b.auto_update_enabled!==undefined?Boolean(b.auto_update_enabled):(b.autoUpdateEnabled!==undefined?Boolean(b.autoUpdateEnabled):current.auto_update_enabled),
+        subscriptionRequestsEnabled:b.subscriptionRequestsEnabled!==undefined?Boolean(b.subscriptionRequestsEnabled):current.subscriptionRequestsEnabled
+      })});
     }
     if(action==="save-settings") {
       const current=await getSiteSettings();
@@ -55,6 +61,7 @@ export default async function(request){
       return json({ok:true,manualEndpoint:"/.netlify/functions/scanner-hourly-refresh-manual",message:"استخدم مسار التحديث اليدوي الخلفي مباشرة من لوحة الأدمن."});
     }
     if(action==="refresh-splits") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-splits-worker"});
+    if(action==="refresh-float") return json({ok:true,mode:"github-worker",endpoint:"/.netlify/functions/float-worker-manual"});
     if(action==="refresh-borrow") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/update-short-background"});
     if(action==="refresh-massive-current") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-massive-current-worker"});
     if(action==="site-stats") {

@@ -143,7 +143,8 @@ export async function getSiteSettings(){
     siteMode:["normal","maintenance","development"].includes(String(d?.siteMode))?String(d.siteMode):"normal",
     siteModeMessage:String(d?.siteModeMessage||""),
     autoUpdateEnabled:(d?.auto_update_enabled!==undefined ? Boolean(d.auto_update_enabled) : d?.autoUpdateEnabled!==false),
-    auto_update_enabled:(d?.auto_update_enabled!==undefined ? Boolean(d.auto_update_enabled) : d?.autoUpdateEnabled!==false)
+    auto_update_enabled:(d?.auto_update_enabled!==undefined ? Boolean(d.auto_update_enabled) : d?.autoUpdateEnabled!==false),
+    subscriptionRequestsEnabled:d?.subscriptionRequestsEnabled!==false
   };
 }
 export async function saveSiteSettings(s){
@@ -166,6 +167,7 @@ export async function saveSiteSettings(s){
     siteModeMessage:String(s?.siteModeMessage ?? old.siteModeMessage ?? "").trim(),
     autoUpdateEnabled:s?.autoUpdateEnabled!==undefined ? Boolean(s.autoUpdateEnabled) : (s?.auto_update_enabled!==undefined ? Boolean(s.auto_update_enabled) : Boolean(old.autoUpdateEnabled)),
     auto_update_enabled:s?.auto_update_enabled!==undefined ? Boolean(s.auto_update_enabled) : (s?.autoUpdateEnabled!==undefined ? Boolean(s.autoUpdateEnabled) : Boolean(old.auto_update_enabled ?? old.autoUpdateEnabled)),
+    subscriptionRequestsEnabled:s?.subscriptionRequestsEnabled!==undefined ? Boolean(s.subscriptionRequestsEnabled) : Boolean(old.subscriptionRequestsEnabled),
     updatedAt:new Date().toISOString()
   };
   await getSiteSettingsStore().setJSON("site-settings",out);

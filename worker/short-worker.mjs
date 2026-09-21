@@ -15,18 +15,15 @@ async function setJson(key,value){await store.setJSON(key,value);}
 function supportedExchange(value){return ['XNAS','XNYS','XASE'].includes(String(value||'').toUpperCase());}
 
 async function instantPublish(ticker,b,stamp){
-  const key='scanner-cache-v1';
+  // Persist progress continuously in Supabase without publishing a partial
+  // customer snapshot. The completed short snapshot is still published at the
+  // top of the hour by finish().
+  const key='scanner-borrow-progress-v1';
   const base=await getJson(key);
-  if(!base?.ready||!Array.isArray(base.records))return;
-  const rows=base.records.map(row=>{
-    if(String(row.ticker||'').toUpperCase()!==ticker)return row;
-    const shares=finite(b?.shares), fee=finite(b?.fee);
-    return {...row,shortShares:shares,borrowFee:fee,shortDataState:shares!==null&&fee!==null?'ready':'unavailable',shortDataSource:b?.source||null,shortDataUpdatedAt:b?.updatedAt||stamp};
-  });
-  const payload={...base,records:rows,borrowUpdatedAt:stamp,updatedAt:stamp};
-  await setJson(key,payload);
-  await setJson('scanner-central-cache-v1',payload);
-  await setJson('scanner-cache-pointer-v2',{version:2,key,updatedAt:stamp,records:rows.length});
+  const records=base?.records&&typeof base.records==='object'?{...base.records}:{};
+  records[ticker]={ticker,shares:finite(b?.shares),fee:finite(b?.fee),updatedAt:b?.updatedAt||stamp,source:b?.source||null,state:'ready'};
+  await setJson(key,{version:1,updatedAt:stamp,records,jobId:b?.jobId||base?.jobId||null});
+  return true;
 }
 
 async function finish(job,stamp){
@@ -101,6 +98,7 @@ async function processTicker(job,ticker){
 
   const stamp=new Date().toISOString();
   job.attempted++;
+  const gracefulSkip=Boolean(!shortOk && (error==='scrape-no-borrow-data' || value?.reason==='scrape-no-borrow-data'));
   if(shortOk){
     job.successful++;
     const shares=finite(value?.shares), fee=finite(value?.fee);
@@ -125,16 +123,22 @@ async function processTicker(job,ticker){
       shares:finite(old.shares),fee:finite(old.fee),
       freeFloat:finite(old.freeFloat??old.free_float),free_float:finite(old.freeFloat??old.free_float),
       updatedAt:old.updatedAt||null,source:old.source||'pending',
-      state:(finite(old.shares)!==null||finite(old.fee)!==null)?'previous':'pending',
-      lastError:error||'no-data'
+      state:(finite(old.shares)!==null||finite(old.fee)!==null)?'previous':'unavailable',
+      lastError:gracefulSkip?'scrape-no-borrow-data':(error||'no-data')
     };
-    console.warn('[external-short-worker] ticker failed',{ticker,exchange,error,shortStatus:value?.status||null,shortPreview:value?.responsePreview||''});
+    console.warn(`[external-short-worker] ${gracefulSkip?'graceful skip':'ticker failed'}`,{ticker,exchange,error,shortStatus:value?.status||null,shortPreview:value?.responsePreview||''});
   }
   job.cursor++;
   job.lastActivityAt=stamp;
   await setJson(`scanner-short-record:${ticker}`, {ticker,exchange,...job.records[ticker],jobId:job.jobId,index:job.cursor,total:job.total,savedAt:stamp});
+  // Persist each successful result immediately in Supabase progress storage.
+  // Missing borrow data is a normal skip and never aborts the remaining cycle.
+  if(shortOk){
+    try{await instantPublish(ticker,{...value,updatedAt:stamp},stamp);}
+    catch(publishError){console.warn('[external-short-worker] immediate publish failed',{ticker,error:String(publishError?.message||publishError)});}
+  }
   await setJson(JOB_KEY,job);
-  const doneUnique=job.tickers.filter(t=>['ready','previous'].includes(job.records[t]?.state)).length;
+  const doneUnique=job.tickers.filter(t=>['ready','previous','unavailable'].includes(job.records[t]?.state)).length;
   await setJson(STATUS_KEY,{state:job.cursor>=job.total?'ready':'building',jobId:job.jobId,startedAt:job.startedAt,finishedAt:job.cursor>=job.total?stamp:null,error:null,total:job.total,done:job.cursor,attempts:job.attempted,successful:doneUnique,failed:job.failed,records:Object.keys(job.records).length,phase:job.cursor>=job.total?'short-complete-awaiting-float':'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions',currentTicker:ticker,currentIndex:job.cursor,remaining:Math.max(0,job.total-job.cursor),lastTickerAt:stamp});
   return job.cursor>=job.total;
 }

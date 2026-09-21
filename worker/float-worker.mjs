@@ -43,12 +43,13 @@ async function publishFloatSnapshot(job,stamp){
 
 async function main(){
   const date=easternDate();
+  const forceRun=String(process.env.FORCE_FLOAT_RUN||'').toLowerCase()==='true';
   const universe=await getJson('scanner-universe-v2');
   const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
   if(!tickers.length)throw new Error('لا توجد قائمة أسهم في scanner-universe-v2.');
 
   const marker=await getJson('scanner-finviz-float-daily-v1');
-  if(marker?.date===date&&marker?.state==='ready')return;
+  if(marker?.date===date&&marker?.state==='ready'&&!forceRun)return;
 
   const startedAt=new Date().toISOString();
   const job={active:true,jobId:crypto.randomUUID(),date,startedAt,universeUpdatedAt:universe?.updatedAt||null,tickers,total:tickers.length,cursor:0,successful:0,failed:0,records:{}};

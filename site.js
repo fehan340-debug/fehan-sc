@@ -43,8 +43,11 @@ async function initOneSignal(){
       window.OneSignalDeferred.push(async OneSignal=>{
         try{await OneSignal.init({appId:d.appId,allowLocalhostAsSecureOrigin:true});oneSignalReady=true;if(window.currentUserEmail&&OneSignal.login)await OneSignal.login(window.currentUserEmail);}catch(e){console.warn('OneSignal init',e.message);}
       });
-      await new Promise(r=>setTimeout(r,500));
-    } else if(window.OneSignal?.login&&window.currentUserEmail){try{await window.OneSignal.login(window.currentUserEmail);}catch{}}
+      for(let i=0;i<20&&!oneSignalReady;i++)await new Promise(r=>setTimeout(r,250));
+    }
+    const os=window.OneSignal;
+    if(!oneSignalReady||!os)return false;
+    if(window.currentUserEmail&&os.login){try{await os.login(window.currentUserEmail);}catch{}}
     return true;
   }catch(e){console.warn('OneSignal init',e.message);return false;}
 }
@@ -58,23 +61,26 @@ async function ensureNotificationPermission(){
   }
   const ok=await initOneSignal();
   if(!ok){$('alertPermissionNote').textContent='تم السماح بالإشعارات، لكن خدمة التنبيهات الخارجية غير مهيأة بعد.';return false;}
-  try{if(window.OneSignal?.Notifications?.permission===false)await OneSignal.Notifications.requestPermission();}catch{}
+  try{const os=window.OneSignal;if(os?.Notifications?.permission===false&&os.Notifications.requestPermission)await os.Notifications.requestPermission();if(os?.User?.PushSubscription?.optIn)await os.User.PushSubscription.optIn();if(window.currentUserEmail&&os?.login)await os.login(window.currentUserEmail);}catch(e){console.warn('OneSignal permission/subscription',e.message);}
   $('alertPermissionNote').textContent='تم السماح بإشعارات الويب. يمكنك الآن حفظ التنبيه.';
   return true;
 }
 async function loadAlertSettings(){try{const d=await getJSON('/.netlify/functions/alerts?action=settings');alertSettings=d.settings||{};}catch(e){console.warn('alerts settings',e.message);}}
+function updateAlertDropInput(){const mode=$('alertDropMode')?.value||'percent',input=$('alertDropValue');if(!input)return;input.placeholder=mode==='price'?'مثال: 4.20':'مثال: 5';input.step=mode==='price'?'0.01':'1';const suffix=$('alertDropSuffix');if(suffix)suffix.textContent=mode==='price'?'$':'%';}
 function openAlertModal(f){
   alertTickerCurrent=f.ticker; const a=alertSettings[f.ticker]||{};
   $('alertTicker').textContent=f.ticker; $('alertDropEnabled').checked=Boolean(a.drop?.enabled); $('alertDropMode').value=a.drop?.mode||'percent'; $('alertDropValue').value=a.drop?.value??'';
   $('alertShortEnabled').checked=Boolean(a.short?.enabled); $('alertShortValue').value=a.short?.value??'';
   $('alertRsiEnabled').checked=Boolean(a.rsi?.enabled); $('alertRsiDirection').value=a.rsi?.direction||'below'; $('alertRsiValue').value=a.rsi?.value??'';
-  $('alertMsg').textContent=''; $('alertModal').classList.add('show'); ensureNotificationPermission();
+  updateAlertDropInput(); $('alertMsg').textContent=''; $('alertModal').classList.add('show'); ensureNotificationPermission();
 }
 async function saveAlertSettings(){
-  const ok=await ensureNotificationPermission(); if(!ok)return;
-  const payload={ticker:alertTickerCurrent,splitDate:(favoriteItems.find(x=>x.ticker===alertTickerCurrent)||{}).splitDate||'',enabled:true,drop:{enabled:$('alertDropEnabled').checked,mode:$('alertDropMode').value,value:Number($('alertDropValue').value)},short:{enabled:$('alertShortEnabled').checked,value:Number($('alertShortValue').value)},rsi:{enabled:$('alertRsiEnabled').checked,value:Number($('alertRsiValue').value),direction:$('alertRsiDirection').value}};
+  const ok=await ensureNotificationPermission();if(!ok)return;
+  const num=id=>{const v=String($(id)?.value??'').trim();return v===''?null:Number(v);};
+  const payload={ticker:alertTickerCurrent,splitDate:(favoriteItems.find(x=>x.ticker===alertTickerCurrent)||{}).splitDate||'',enabled:true,drop:{enabled:$('alertDropEnabled').checked,mode:$('alertDropMode').value,value:num('alertDropValue')},short:{enabled:$('alertShortEnabled').checked,value:num('alertShortValue')},rsi:{enabled:$('alertRsiEnabled').checked,value:num('alertRsiValue'),direction:$('alertRsiDirection').value}};
   if(!payload.drop.enabled&&!payload.short.enabled&&!payload.rsi.enabled)payload.enabled=false;
-  try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حفظ التنبيه.');alertSettings=d.settings||{};$('alertMsg').textContent='تم حفظ إعدادات التنبيه.';renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر حفظ التنبيه.';}
+  const btn=$('alertSave');if(btn)btn.disabled=true;$('alertMsg').textContent='جاري حفظ التنبيه...';
+  try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حفظ التنبيه.');alertSettings=d.settings||{};$('alertMsg').textContent='تم حفظ إعدادات التنبيه.';renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر حفظ التنبيه.';}finally{if(btn)btn.disabled=false;}
 }
 async function disableAlert(){try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:alertTickerCurrent})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر إلغاء التنبيه.');alertSettings=d.settings||{};$('alertModal').classList.remove('show');renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر إلغاء التنبيه.';}}
 async function loadNotificationHistory(){try{const d=await getJSON('/.netlify/functions/alerts?action=history');const list=$('notificationList');if(!list)return;const items=d.items||[];$('notificationBadge')?.classList.toggle('hidden',!items.length);if($('notificationBadge'))$('notificationBadge').textContent=Math.min(items.length,99);list.innerHTML=items.length?items.map(x=>`<div class="testRow"><div><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لا توجد تنبيهات.</div>';}catch(e){console.warn('alert history',e.message)}}
@@ -438,7 +444,7 @@ async function runFavoriteTest(f,tr){
    ];
    $('testTitle').textContent='اختبار السهم — '+x.ticker;
    $('testRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');
-   $('testNote').textContent='تم الاختبار من الكاش الجاهز — بدون طلب API جديد.';
+   $('testNote').textContent='تم عرض البيانات المحفوظة حاليًا.';
    $('testModal').classList.add('show');
  }catch(e){
    $('testRows').innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر الاختبار')+'</span></div>';
@@ -449,7 +455,7 @@ async function runFavoriteTest(f,tr){
 async function runFavoriteDetails(f,tr){
  const btn=tr?.querySelector('.favDetails');if(btn)btn.disabled=true;
  showDetailsLoading(f);
- try{await loadScannerCache();const x=cacheFind(f);if(!x)throw Error('بيانات هذا السهم غير موجودة في التخزين الحالي.');const dropPct=Number.isFinite(Number(x.splitOpen))&&Number.isFinite(Number(x.current))?(Number(x.splitOpen)-Number(x.current))/Number(x.splitOpen)*100:NaN;const rows=[['السهم',x.ticker],['افتتاح يوم التقسيم',Number.isFinite(Number(x.splitOpen))?'$'+fmt(x.splitOpen):'غير متاح'],['الهدف',Number.isFinite(Number(x.splitOpen))?'$'+fmt(Number(x.splitOpen)*(1-Number($('drop').value||0)/100)):'غير متاح'],['السعر الحالي',Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'غير متاح'],['نسبة الهبوط',Number.isFinite(dropPct)?fmt(dropPct)+'%':'غير متاح'],['تاريخ التقسيم',x.splitDate||'غير متاح'],['RSI (14)',Number.isFinite(Number(x.rsi))?fmt(x.rsi):'غير متاح'],['القاع',Number.isFinite(Number(x.low))?'$'+fmt(x.low):'غير متاح'],['تاريخ القاع',x.lowDate||'غير متاح'],['IBKR Available Shares',Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'غير متاح'],['IBKR Borrow Fee',Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'غير متاح'],['Free Float',formatCompactShares(x.freeFloat)==='—'?'غير متاح':formatCompactShares(x.freeFloat)]];$('detailsTitle').textContent='تفاصيل السهم — '+x.ticker;$('detailsRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');$('detailsNote').textContent='هذه بيانات الباحث المحدثة تلقائيًا.';$('detailsModal').classList.add('show');}catch(e){$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر عرض التفاصيل')+'</span></div>';$("detailsNote").textContent='تعذر تحميل التفاصيل.';}finally{if(btn)btn.disabled=false;}
+ try{await loadScannerCache();const x=cacheFind(f);if(!x)throw Error('بيانات هذا السهم غير موجودة في التخزين الحالي.');const dropPct=Number.isFinite(Number(x.splitOpen))&&Number.isFinite(Number(x.current))?(Number(x.splitOpen)-Number(x.current))/Number(x.splitOpen)*100:NaN;const rows=[['السهم',x.ticker],['افتتاح يوم التقسيم',Number.isFinite(Number(x.splitOpen))?'$'+fmt(x.splitOpen):'غير متاح'],['الهدف',Number.isFinite(Number(x.splitOpen))?'$'+fmt(Number(x.splitOpen)*(1-Number($('drop').value||0)/100)):'غير متاح'],['السعر الحالي',Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'غير متاح'],['نسبة الهبوط',Number.isFinite(dropPct)?fmt(dropPct)+'%':'غير متاح'],['تاريخ التقسيم',x.splitDate||'غير متاح'],['RSI (14)',Number.isFinite(Number(x.rsi))?fmt(x.rsi):'غير متاح'],['القاع',Number.isFinite(Number(x.low))?'$'+fmt(x.low):'غير متاح'],['تاريخ القاع',x.lowDate||'غير متاح'],['IBKR Available Shares',Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'غير متاح'],['IBKR Borrow Fee',Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'غير متاح'],['Free Float',formatCompactShares(x.freeFloat)==='—'?'غير متاح':formatCompactShares(x.freeFloat)]];$('detailsTitle').textContent='تفاصيل السهم — '+x.ticker;$('detailsRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');$('detailsNote').textContent='بيانات محدثة محفوظة في الموقع.';$('detailsModal').classList.add('show');}catch(e){$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر عرض التفاصيل')+'</span></div>';$("detailsNote").textContent='تعذر تحميل التفاصيل.';}finally{if(btn)btn.disabled=false;}
 }
 async function refreshFavoriteData(full=true){
   if(favoriteRefreshing||!favoriteItems.length)return; favoriteRefreshing=true;
@@ -496,6 +502,13 @@ loadScannerSettings();$("exportCsv").onclick=exportResultsCsv;
 
 function renderBankDetails(bank){const rows=[['اسم الحساب',bank.name,false],['البنك',bank.bank,false],['رقم الحساب',bank.account,true],['رقم الآيبان',bank.iban,true]];$("publicBankDetails").innerHTML=rows.map(([l,v,canCopy])=>`<div class="bankRow"><span class="bankLabel">${escapeHtml(l)}</span><span class="bankValue">${escapeHtml(v||"—")}${v&&canCopy?` <button type="button" class="copyBank" data-copy="${escapeHtml(v)}">نسخ</button>`:""}</span></div>`).join("");document.querySelectorAll('.copyBank').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);}catch{const ta=document.createElement('textarea');ta.value=b.dataset.copy;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();}const old=b.textContent;b.textContent='تم النسخ ✓';setTimeout(()=>b.textContent=old,1200);});}
 
+function applySubscriptionRequestState(enabled){
+  const btn=$("requestBtn"), box=$("requestBox"), status=$("subscriptionRequestStatus");
+  const on=enabled!==false;
+  if(btn){btn.disabled=!on;btn.classList.toggle("hidden",!on);btn.setAttribute("aria-disabled",String(!on));}
+  if(box && !on) box.classList.add("hidden");
+  if(status) status.textContent=on?"":"طلبات الاشتراك متوقفة حاليًا.";
+}
 function applyMaintenanceState(site){
   const active=site&&site.siteMode&&site.siteMode!=="normal";
   maintenanceActive=Boolean(active);
@@ -511,7 +524,7 @@ async function loadPublicPricing(){
   try{
     const r=await apiFetch("/.netlify/functions/auth?action=pricing"),d=await responseJSON(r);
     if(r.ok&&d.pricing){
-      window.sitePricing=d.pricing;applyMaintenanceState(d.pricing);renderPlanSelects(d.pricing);
+      window.sitePricing=d.pricing;applyMaintenanceState(d.pricing);applySubscriptionRequestState(d.pricing.subscriptionRequestsEnabled);renderPlanSelects(d.pricing);
       renderBankDetails(d.pricing.bank||{});updateTelegramLinks(d.pricing.telegram||"");
     }
   }catch{}
@@ -594,6 +607,7 @@ $("loginBtn").onclick=async()=>{
 $("logout").onclick=async()=>{await apiFetch("/.netlify/functions/auth?action=logout",{method:"POST"});location.reload()};
 function termsHtml(){return `<p>قبل إرسال طلب الاشتراك، يرجى قراءة الشروط التالية:</p><div class="subscribeRules"><ol><li>الاشتراك للاستخدام الشخصي فقط، ولا يُسمح بمشاركة الحساب أو بيانات الوصول مع الآخرين.</li><li>المعلومات المعروضة في الباحث مخصصة للبحث والتحليل فقط، ولا تُعد توصية بالشراء أو البيع ولا نصيحة استثمارية.</li><li>الاشتراك مرتبط بجهاز واحد وفق آلية حماية الحساب في الموقع.</li><li>يتم تحويل قيمة الباقة ثم إرفاق إثبات التحويل في نموذج الاشتراك.</li><li>لا يبدأ الاشتراك إلا بعد مراجعة الطلب واعتماد الحوالة من الإدارة.</li><li>تُطبق سياسة الدفع والاسترجاع المنشورة في الموقع على طلبات الاشتراك.</li></ol></div>`;}
 function openSubscribeTerms(){
+  if(window.sitePricing?.subscriptionRequestsEnabled===false){applySubscriptionRequestState(false);return;}
   $("termsContent").innerHTML=termsHtml();$("termsAgree").checked=false;$("termsContinue").disabled=true;$("termsModal").classList.add("show");
 }
 function continueToSubscribe(){
@@ -722,11 +736,14 @@ async function loadSiteSettingsPanel(){
     $("siteMode").value=p.siteMode||"normal";
     $("siteModeMessage").value=p.siteModeMessage||"";
     $("autoUpdateToggle").checked=(p.auto_update_enabled!==undefined?p.auto_update_enabled:p.autoUpdateEnabled)!==false;
+    $("subscriptionRequestToggle").checked=p.subscriptionRequestsEnabled!==false;
     $("autoUpdateMsg").textContent="";
     $("siteModeMsg").textContent="";
     return true;
   }catch(e){siteSettingsUnlocked=false;alert(e.message||"تعذر فتح إعدادات الموقع.");return false;}
 }
+async function saveSubscriptionRequestSetting(){const btn=$("saveSubscriptionRequest"),msg=$("subscriptionRequestMsg");try{const enabled=$("subscriptionRequestToggle").checked;btn.disabled=true;msg.textContent="جاري حفظ إعداد طلبات الاشتراك...";const d=await adminAction("save-site-settings",{subscriptionRequestsEnabled:enabled});window.sitePricing=d.pricing;applySubscriptionRequestState(d.pricing.subscriptionRequestsEnabled);$("subscriptionRequestToggle").checked=d.pricing.subscriptionRequestsEnabled!==false;msg.textContent=$("subscriptionRequestToggle").checked?"تم السماح بطلبات الاشتراك الجديدة.":"تم إيقاف طلبات الاشتراك الجديدة.";}catch(e){msg.textContent=e.message||"تعذر حفظ إعداد طلبات الاشتراك.";}finally{btn.disabled=false;}}
+if($("saveSubscriptionRequest"))$("saveSubscriptionRequest").onclick=saveSubscriptionRequestSetting;
 async function saveAutoUpdate(){
   const btn=$("saveAutoUpdate"),msg=$("autoUpdateMsg");
   try{
@@ -739,7 +756,7 @@ async function saveAutoUpdate(){
     msg.textContent=actual?"تم تفعيل التحديث التلقائي. سيعمل جدول Massive كل 10 دقائق والشورت مرة كل ساعة.":"تم إيقاف التحديث التلقائي بالكامل. لن تبدأ أي جدولة جديدة، والتحديثات اليدوية تبقى مستقلة.";
   }catch(e){msg.textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}finally{btn.disabled=false;}
 }
-if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;
+if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;$("alertDropMode")?.addEventListener("change",updateAlertDropInput);
 async function saveSiteMode(){
   try{
     const mode=$("siteMode").value;
@@ -937,7 +954,7 @@ async function pollRefreshStatus(kind,msg,maxMs=120000){
     }catch{}
     await sleep(kind==="borrow"?1000:3000);
   }
-  msg.textContent="تم تشغيل المهمة، لكنها ما زالت تعمل في الخلفية. حدّث الإحصائيات بعد قليل للتأكد من اكتمالها.";
+  msg.textContent="انتهت متابعة الطلب من هذه الشاشة؛ المهمة تعمل في الخلفية. يمكنك تحديث الإحصائيات لاحقًا للتأكد من النتيجة.";
   return false;
 }
 function bindSingleFlightClick(id,handler){
@@ -965,6 +982,7 @@ async function triggerDailySplitUpdate(btn,msg){
   if(!btn||!msg)return; btn.disabled=true; msg.textContent="جاري تحديث قائمة التقسيم…";
   try{const r=await apiFetch("/.netlify/functions/scanner-daily-refresh-manual",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث القائمة (HTTP ${r.status}).`);await pollRefreshStatus("splits",msg,900000);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تحديث قائمة التقسيم.";}finally{btn.disabled=false;}
 }
+async function triggerFloatUpdate(btn,msg){if(!btn||!msg)return;btn.disabled=true;msg.textContent="جاري تشغيل تحديث Free Float فقط…";try{const r=await apiFetch("/.netlify/functions/float-worker-manual",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Free Float (HTTP ${r.status}).`);msg.textContent="تم تشغيل تحديث Free Float في الخلفية. راجع الإحصائيات بعد اكتماله.";await sleep(1200);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تشغيل تحديث Free Float.";}finally{btn.disabled=false;}}
 async function triggerMassiveCurrentUpdate(btn,msg){
   if(!btn||!msg)return; btn.disabled=true; msg.textContent="جاري تحديث الأسعار الحالية…";
   try{const r=await apiFetch("/.netlify/functions/scanner-massive-current-worker",{method:"POST"});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث Massive (HTTP ${r.status}).`);await pollRefreshStatus("massive",msg,900000);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تحديث Massive.";}finally{btn.disabled=false;}
@@ -977,7 +995,7 @@ async function triggerBorrowUpdate(btn,msg){
   try{const r=await apiFetch("/.netlify/functions/update-short-background",{method:"POST",headers:{"Content-Type":"application/json"}});const d=await responseJSON(r);if(!r.ok)throw Error(d?.error||`تعذر تشغيل تحديث الشورت (HTTP ${r.status}).`);await pollRefreshStatus("borrow",msg,2700000);await loadSiteStats();}catch(e){msg.textContent=e.message||"تعذر تحديث الشورت والفائدة.";}finally{btn.disabled=false;}
 }
 bindSingleFlightClick("refreshBorrowNow",btn=>triggerBorrowUpdate(btn,$("borrowAdminMsg")));
-bindSingleFlightClick("refreshMassiveCurrent",btn=>triggerMassiveCurrentUpdate(btn,$("massiveCurrentAdminMsg")));
+bindSingleFlightClick("refreshMassiveCurrent",btn=>triggerMassiveCurrentUpdate(btn,$("massiveCurrentAdminMsg")));bindSingleFlightClick("refreshFloatNow",btn=>triggerFloatUpdate(btn,$("floatAdminMsg")));
 bindSingleFlightClick("refreshSavedCache",btn=>triggerSavedCacheUpdate(btn,$("savedCacheAdminMsg")));
 bindSingleFlightClick("refreshDailySplits",btn=>triggerDailySplitUpdate(btn,$("dailySplitsAdminMsg")));
 bindSingleFlightClick("refreshSiteStats",()=>loadSiteStats());

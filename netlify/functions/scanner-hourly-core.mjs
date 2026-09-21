@@ -74,18 +74,20 @@ async function snapshotTicker(symbol){
 export async function snapshot(tickers=[]){
   const d=await massive('/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false');
   const m=new Map();
+  const session=marketSession();
   for(const x of d.tickers||[]){
     if(!x.ticker)continue;
-    const regular=Number(x.lastTrade?.p??x.day?.c??x.min?.c);
+    const liveRegular=Number(x.lastTrade?.p);
+    const officialClose=session==='regular' ? Number(x.prevDay?.c) : Number(x.day?.c??x.prevDay?.c);
+    const regular=session==='regular' && Number.isFinite(liveRegular)&&liveRegular>0 ? liveRegular : officialClose;
     const pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p);
-    if(Number.isFinite(regular)&&regular>0)m.set(String(x.ticker).toUpperCase(),{price:regular,regularPrice:regular,preMarket:Number.isFinite(pre)&&pre>0?pre:null,afterHours:Number.isFinite(after)&&after>0?after:null});
+    if(Number.isFinite(regular)&&regular>0)m.set(String(x.ticker).toUpperCase(),{price:regular,regularPrice:Number.isFinite(officialClose)&&officialClose>0?officialClose:regular,preMarket:Number.isFinite(pre)&&pre>0?pre:null,afterHours:Number.isFinite(after)&&after>0?after:null,priceSession:session,priceSource:session==='regular'&&regular===liveRegular?'regular':'regularClose'});
   }
   // During extended hours, verify the exact per-symbol Massive/Polygon snapshot
   // endpoint so preMarket/afterHours is used instead of yesterday's close.
-  const session=marketSession();
   if((session==='pre'||session==='after')&&Array.isArray(tickers)&&tickers.length){
     let idx=0;
-    const worker=async()=>{while(true){const i=idx++;if(i>=tickers.length)return;const t=String(tickers[i]).toUpperCase();try{const x=await snapshotTicker(t);const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c);const extended=session==='pre'?pre:after;const price=Number.isFinite(extended)&&extended>0?extended:(Number.isFinite(last)&&last>0?last:(Number.isFinite(day)&&day>0?day:null));if(price!=null)m.set(t,{price,regularPrice:Number.isFinite(last)&&last>0?last:day,preMarket:Number.isFinite(pre)&&pre>0?pre:null,afterHours:Number.isFinite(after)&&after>0?after:null,priceSession:session,priceSource:Number.isFinite(extended)&&extended>0?(session==='pre'?'preMarket':'afterHours'):'regular'});}catch(e){console.warn('[snapshot] ticker snapshot failed',{ticker:t,error:String(e?.message||e)});}}};
+    const worker=async()=>{while(true){const i=idx++;if(i>=tickers.length)return;const t=String(tickers[i]).toUpperCase();try{const x=await snapshotTicker(t);const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c);const extended=session==='pre'?pre:after;const price=Number.isFinite(extended)&&extended>0?extended:(Number.isFinite(last)&&last>0?last:(Number.isFinite(day)&&day>0?day:null));if(price!=null)m.set(t,{price,regularPrice:Number.isFinite(day)&&day>0?day:last,preMarket:Number.isFinite(pre)&&pre>0?pre:null,afterHours:Number.isFinite(after)&&after>0?after:null,priceSession:session,priceSource:Number.isFinite(extended)&&extended>0?(session==='pre'?'preMarket':'afterHours'):'regular'});}catch(e){console.warn('[snapshot] ticker snapshot failed',{ticker:t,error:String(e?.message||e)});}}};
     await Promise.all(Array.from({length:Math.min(8,tickers.length)},worker));
   }
   return m;

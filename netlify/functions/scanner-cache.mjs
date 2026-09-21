@@ -23,8 +23,8 @@ export default async function(request){
     const ipoRecords=Array.isArray(cache?.ipos)?cache.ipos:[];
     const ipoUpdatedAt=cache?.ipoUpdatedAt||null;
     const edgeCacheHeaders={
-      'Cache-Control':'public, max-age=300, s-maxage=300, stale-while-revalidate=300, stale-if-error=86400',
-      'Surrogate-Control':'max-age=300, stale-while-revalidate=300, stale-if-error=86400',
+      'Cache-Control':'public, max-age=300, s-maxage=300, stale-while-revalidate=60',
+      'Surrogate-Control':'max-age=300, stale-while-revalidate=60',
       'Vary':'Accept-Encoding'
     };
     if(cache?.ready&&Array.isArray(cache.records))return json({ok:true,...cache,ipos:ipoRecords,ipoUpdatedAt,serverCacheTtlSeconds:300},200,edgeCacheHeaders);
