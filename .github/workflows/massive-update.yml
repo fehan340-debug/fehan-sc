@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      source:
+        description: Trigger source
+        required: false
+        default: scheduled
+      requested_at:
+        description: Trigger timestamp
+        required: false
+        default: ""
 
 jobs:
   update-massive:
