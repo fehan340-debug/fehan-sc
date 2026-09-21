@@ -117,7 +117,7 @@ async function loadScannerCache(options={}){
     const r=await apiFetch('/.netlify/functions/scanner-cache');
     const d=await responseJSON(r);
     if(!r.ok)throw Error(d.error||'تعذر تحميل بيانات الباحث.');
-    if(d.ready){scannerCache=(Array.isArray(d.records)?d.records:[]).map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||null;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||null;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||null;updateDataFreshness();return {...d,records:scannerCache};}
+    if(d.ready){const incoming=Array.isArray(d.records)?d.records:[];if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=incoming.map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();}return {...d,records:scannerCache||[]};}
     scannerCache=[];scannerCacheUpdatedAt=null;
     if(!triggered){
       triggered=true;
@@ -409,7 +409,7 @@ $("pause").onclick=()=>{if(!running||stopped)return;paused=true;$("pause").disab
 $("resume").onclick=()=>{if(!running||stopped)return;paused=false;$("pause").disabled=false;$("resume").disabled=true;setStatus(`▶ تم استئناف البحث — النتائج الحالية: <b>${results}</b>.`);};
 $("stop").onclick=()=>{if(!running)return;stopped=true;paused=false;if(scanAbortController)scanAbortController.abort();$("stop").disabled=true;$("pause").disabled=true;$("resume").disabled=true;$("stop").textContent="⏹ جارٍ الإيقاف...";setStatus(`جارٍ إيقاف البحث... النتائج الحالية: <b>${results}</b>.`);};
 
-async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
+async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث بيانات المفضلة…';await refreshFavoriteData(true);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
 function renderFavorites(){const body=$('favoritesResults');if(!body)return;body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';for(const f of favoriteItems){const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">—</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">—</td><td class="fv-fee">—</td><td class="fv-float">—</td><td class="fv-change">—</td>`;tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);}}
 function emaSeries(values,period){if(!Array.isArray(values)||values.length<period)return [];const k=2/(period+1);let ema=values.slice(0,period).reduce((a,b)=>a+b,0)/period;const out=[ema];for(let i=period;i<values.length;i++){ema=(values[i]-ema)*k+ema;out.push(ema);}return out;}
 function cciValue(bars,period=14){if(!Array.isArray(bars)||bars.length<period)return NaN;const tp=bars.map(b=>(Number(b.h)+Number(b.l)+Number(b.c))/3);const w=tp.slice(-period),mean=w.reduce((a,b)=>a+b,0)/period,dev=w.reduce((a,b)=>a+Math.abs(b-mean),0)/period;return dev===0?0:(tp[tp.length-1]-mean)/(0.015*dev);}
@@ -467,7 +467,14 @@ async function runFavoriteDetails(f,tr){
 async function refreshFavoriteData(full=true){
   if(favoriteRefreshing||!favoriteItems.length)return; favoriteRefreshing=true;
   try{
-    await loadScannerCache(); let done=0;
+    // Keep the current snapshot visible, then refresh the published cache and
+    // the live-price lane. A failed live refresh must not turn existing values
+    // into dashes.
+    if(!Array.isArray(scannerCache)||!scannerCache.length)await loadScannerCache({force:true,maxAttempts:3});
+    await loadCurrentPrices();
+    if(full)await loadScannerCache({force:true,maxAttempts:3});
+    await loadCurrentPrices();
+    let done=0;
     for(const f of favoriteItems){const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));if(!tr)continue;const x=cacheFind(f);if(!x)continue;tr.querySelector('.fv-price').textContent=Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'—';tr.querySelector('.fv-change').textContent=Number.isFinite(Number(x.changePct))?(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%':'—';tr.querySelector('.fv-short').textContent=Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'—';tr.querySelector('.fv-fee').textContent=Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'—';tr.querySelector('.fv-float').textContent=formatCompactShares(x.freeFloat);done++;}
     $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${cacheAgeText()}`;
   }catch(e){$('favoritesStatus').textContent='تعذر تحديث المفضلة: '+(e.message||'خطأ');} finally{favoriteRefreshing=false;}

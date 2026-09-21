@@ -12,6 +12,20 @@ async function getJson(key){return await store.get(key);}
 async function setJson(key,value){return await store.setJSON(key,value);}
 function easternDate(){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());}
 
+async function automaticUpdatesEnabled(){
+  if(String(process.env.FORCE_FLOAT_RUN||'').toLowerCase()==='true')return true;
+  const url=String(process.env.SUPABASE_URL||'').trim().replace(/\/+$/,'');
+  const key=String(process.env.SUPABASE_KEY||process.env.SUPABASE_SERVICE_ROLE_KEY||'').trim();
+  const table=String(process.env.SUPABASE_SITE_SETTINGS_TABLE||'app_site_settings_store').trim();
+  if(!url||!key)return true;
+  try{
+    const r=await fetch(`${url}/rest/v1/${encodeURIComponent(table)}?select=value&key=eq.site-settings&limit=1`,{headers:{apikey:key,Authorization:`Bearer ${key}`,'content-type':'application/json'}});
+    if(!r.ok)return true;
+    const rows=await r.json().catch(()=>[]); const d=rows?.[0]?.value;
+    return d?.auto_update_enabled!==undefined?Boolean(d.auto_update_enabled):(d?.autoUpdateEnabled!==false);
+  }catch{return true;}
+}
+
 async function publishFloatSnapshot(job,stamp){
   const records={};
   for(const ticker of job.tickers){
@@ -42,6 +56,7 @@ async function publishFloatSnapshot(job,stamp){
 }
 
 async function main(){
+  if(!(await automaticUpdatesEnabled())){console.log(JSON.stringify({ok:true,skipped:true,reason:'automatic-updates-disabled'}));return;}
   const date=easternDate();
   const forceRun=String(process.env.FORCE_FLOAT_RUN||'').toLowerCase()==='true';
   const universe=await getJson('scanner-universe-v2');
