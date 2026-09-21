@@ -28,6 +28,9 @@ jobs:
       SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      # Uses the repository secret that actually exists in GitHub.
+      # Do not reference SUPABASE_SERVICE_ROLE_KEY because it is not configured.
+
       SUPABASE_TABLE: scanner_worker_store
       FORCE_FLOAT_RUN: ${{ github.event.inputs.source == 'manual-admin-float-only' && 'true' || 'false' }}
     steps:
