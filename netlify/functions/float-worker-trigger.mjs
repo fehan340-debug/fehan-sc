@@ -9,7 +9,7 @@ function parseRepo(raw){
 export async function dispatchFloatWorker({source='daily-market-open'}={}){
   const token=env('GITHUB_WORKER_TOKEN');
   const repo=env('GITHUB_WORKER_REPO');
-  const configuredWorkflow=env('GITHUB_FLOAT_WORKER_WORKFLOW')||'.github/workflows/finviz-float.yml';
+  const configuredWorkflow=env('GITHUB_FLOAT_WORKER_WORKFLOW')||'.github/workflows/daily-float-worker.yml';
   const ref=env('GITHUB_WORKER_REF')||'main';
   if(!token||!repo)throw new Error('لم يتم إعداد GITHUB_WORKER_TOKEN و GITHUB_WORKER_REPO في Netlify.');
   const [owner,name]=parseRepo(repo);

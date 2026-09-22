@@ -11,5 +11,6 @@ export default async function(){
   try{const result=await runMassiveCurrentUpdate();return new Response(JSON.stringify({ok:true,...result}),{status:202,headers:{'content-type':'application/json','cache-control':'no-store'}});}
   catch(e){return new Response(String(e?.message||e),{status:500});}
 }
-// No automatic schedule: scanner-hourly-refresh-schedule.mjs owns live Massive prices every 10 minutes.
+// Live Massive prices are refreshed by the 5-minute scanner schedule.
+// This endpoint remains available for manual/admin invocation.
 

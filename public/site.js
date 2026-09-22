@@ -16,8 +16,27 @@ let sessionKnown=localStorage.getItem("scanner_session_hint")==="1";
 let maintenanceActive=false;
 function readDeviceCookie(){const m=document.cookie.match(/(?:^|; )scanner_device_id=([^;]+)/);return m?decodeURIComponent(m[1]):"";}
 function deviceId(){let k="scanner_device_id";let cookie=readDeviceCookie();let v=cookie||localStorage.getItem(k);if(!v){v=crypto.randomUUID?crypto.randomUUID():(Date.now()+"-"+Math.random());}try{localStorage.setItem(k,v);}catch{}return v}
+async function deviceFingerprint(){
+  const nav=navigator, scr=screen;
+  const raw=[
+    nav.platform||"",
+    scr.width||0,scr.height||0,scr.availWidth||0,scr.availHeight||0,
+    scr.colorDepth||0,window.devicePixelRatio||1,
+    Intl.DateTimeFormat().resolvedOptions().timeZone||"",
+    nav.language||"",
+    nav.hardwareConcurrency||0,nav.deviceMemory||0,nav.maxTouchPoints||0
+  ].join("|");
+  try{
+    if(globalThis.crypto?.subtle){
+      const bytes=new TextEncoder().encode(raw),hash=await crypto.subtle.digest("SHA-256",bytes);
+      return Array.from(new Uint8Array(hash)).map(x=>x.toString(16).padStart(2,"0")).join("");
+    }
+  }catch{}
+  return raw;
+}
 async function apiFetch(url,opt={}){
-  opt.headers=Object.assign({"X-Device-ID":deviceId()},opt.headers||{});
+  const fp=await deviceFingerprint();
+  opt.headers=Object.assign({"X-Device-ID":deviceId(),"X-Device-Fingerprint":fp},opt.headers||{});
   const fullUrl=new URL(url,window.location.origin).toString();
   opt.credentials="same-origin";
   if(url.includes("/.netlify/functions/auth") || url.includes("/.netlify/functions/requests")) opt.cache="no-store";
@@ -103,13 +122,13 @@ function massive(path){return "/.netlify/functions/massive?path="+encodeURICompo
 function chart(path){return "/.netlify/functions/chartexchange?path="+encodeURIComponent(path)}
 function massiveFromUrl(u){try{let x=new URL(u);return massive(x.pathname+x.search)}catch{return null}}
 
-let scannerCache=null, scannerCacheUpdatedAt=null, scannerIPOs=[], scannerTechnicalUpdatedAt=null, scannerShortUpdatedAt=null;
+let scannerCache=null, scannerCacheUpdatedAt=null, scannerIPOs=[], scannerIpoUpdatedAt=null, scannerIpoSearchDone=false, scannerTechnicalUpdatedAt=null, scannerShortUpdatedAt=null;
 async function loadScannerCache(options={}){
   // The scanner is an in-memory snapshot: after the first successful preload,
   // filtering/search must never make a network request. Background refreshes
   // can call this with force:true when a new snapshot is explicitly needed.
   if(!options.force && Array.isArray(scannerCache) && scannerCache.length && scannerCacheUpdatedAt){
-    return {ok:true,ready:true,records:scannerCache,ipos:scannerIPOs,updatedAt:scannerCacheUpdatedAt,technicalUpdatedAt:scannerTechnicalUpdatedAt,shortUpdatedAt:scannerShortUpdatedAt};
+    return {ok:true,ready:true,records:scannerCache,ipos:scannerIPOs,updatedAt:scannerCacheUpdatedAt,ipoUpdatedAt:scannerIpoUpdatedAt,technicalUpdatedAt:scannerTechnicalUpdatedAt,shortUpdatedAt:scannerShortUpdatedAt};
   }
   const wait=Boolean(options.wait), maxAttempts=Math.max(1,Math.min(60,Number(options.maxAttempts)||60));
   let triggered=false;
@@ -117,7 +136,7 @@ async function loadScannerCache(options={}){
     const r=await apiFetch('/.netlify/functions/scanner-cache');
     const d=await responseJSON(r);
     if(!r.ok)throw Error(d.error||'تعذر تحميل بيانات الباحث.');
-    if(d.ready){const incoming=Array.isArray(d.records)?d.records:[];if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=incoming.map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();}return {...d,records:scannerCache||[]};}
+    if(d.ready){const incoming=Array.isArray(d.records)?d.records:[];if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=incoming.map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerIpoUpdatedAt=d.ipoUpdatedAt||scannerIpoUpdatedAt;scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();}return {...d,records:scannerCache||[]};}
     scannerCache=[];scannerCacheUpdatedAt=null;
     if(!triggered){
       triggered=true;
@@ -139,7 +158,7 @@ function freshnessLabel(v){
   const exact=new Date(v).toLocaleString('ar-SA');
   return `${ago} (${exact})`;
 }
-function updateDataFreshness(){const el=$("dataFreshness");if(!el)return;el.textContent=`البيانات الفنية: ${freshnessLabel(scannerTechnicalUpdatedAt)}  |  بيانات الشورت: ${freshnessLabel(scannerShortUpdatedAt)}`;}
+function updateDataFreshness(){const el=$("dataFreshness");if(el)el.textContent=`البيانات الفنية: ${freshnessLabel(scannerTechnicalUpdatedAt)}  |  بيانات الشورت: ${freshnessLabel(scannerShortUpdatedAt)}`;const ipo=$("ipoStatus");if(ipo&&!scannerIpoSearchDone)ipo.textContent=`آخر تحديث لقائمة الاكتتابات: ${scannerIpoUpdatedAt?new Date(scannerIpoUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;}
 setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
@@ -483,6 +502,7 @@ function startFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);refreshF
 function stopFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);favoriteRefreshTimer=null;}
 
 async function loadIPOs(){
+  scannerIpoSearchDone=true;
   const days=Math.max(1,Math.min(30,Number($('ipoDays').value)||7)); const ex=$('ipoExchange').value;
   $('ipoRefresh').disabled=true; $('ipoStatus').textContent='جاري البحث في بيانات الاكتتابات الجاهزة...'; $('ipoResults').innerHTML='';
   try{
@@ -497,9 +517,9 @@ async function loadIPOs(){
       if(!Number.isFinite(dt.getTime()))return false;
       return dt>=today&&dt<=end&&(ex==='ALL'||x.primary_exchange===ex);
     }).sort((a,b)=>String(a.listing_date).localeCompare(String(b.listing_date)));
-    if(!rows.length){$('ipoStatus').textContent=`لا توجد اكتتابات مؤكدة خلال ${days} أيام. آخر تحديث للبيانات: ${scannerCacheUpdatedAt?new Date(scannerCacheUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;return;}
+    if(!rows.length){$('ipoStatus').textContent=`لا توجد اكتتابات مؤكدة خلال ${days} أيام. آخر تحديث لقائمة الاكتتابات: ${scannerIpoUpdatedAt?new Date(scannerIpoUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;return;}
     $('ipoResults').innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.issuer_name||x.security_description||'—')}</td><td>${escapeHtml(x.listing_date||'—')}</td><td>${Number(x.max_shares_offered||x.min_shares_offered||0)?Number(x.max_shares_offered||x.min_shares_offered).toLocaleString():'—'}</td><td>${x.lowest_offer_price!=null||x.highest_offer_price!=null?`$${fmt(x.lowest_offer_price)} — $${fmt(x.highest_offer_price)}`:'—'}</td><td>${x.total_offer_size!=null?Number(x.total_offer_size).toLocaleString():'—'}</td></tr>`).join('');
-    $('ipoStatus').textContent=`تم العثور على ${rows.length} اكتتاب${rows.length===1?'':'ات'}.`;
+    $('ipoStatus').textContent=`تم العثور على ${rows.length} اكتتاب${rows.length===1?'':'ات'}. آخر تحديث لقائمة الاكتتابات: ${scannerIpoUpdatedAt?new Date(scannerIpoUpdatedAt).toLocaleString('ar-SA'):'غير متوفر'}.`;
   }catch(e){$('ipoStatus').textContent='تعذر البحث في بيانات الاكتتابات: '+(e.message||'خطأ غير معروف');}
   finally{$('ipoRefresh').disabled=false;}
 }
@@ -1040,7 +1060,7 @@ async function loadSiteStats(){
       <div><label>حالة كاش الباحث</label><div class="calcbox" style="font-size:14px">${cacheState}${cacheWarn}${s.cacheBuildError?`<br><span style="color:#b91c1c">${escapeHtml(s.cacheBuildError)}</span>`:""}</div></div><div><label>آخر تحديث للبيانات</label><div class="calcbox" style="font-size:14px">${escapeHtml(updated)}</div></div>
       <div><label>آخر تحديث لقائمة التقسيمات</label><div class="calcbox" style="font-size:14px">${escapeHtml(splitUpdated)}</div></div>
       <div><label>كاش الاكتتابات</label><div class="calcbox" style="font-size:14px">${Number(s.ipoRecords||0).toLocaleString()} اكتتاب — ${s.ipoStatus==="ready"?"جاهز":s.ipoStatus==="building"?"قيد التحديث":s.ipoStatus==="error"?"فشل":"غير متوفر"}<br>${s.ipoUpdatedAt?escapeHtml(new Date(s.ipoUpdatedAt).toLocaleString("ar-SA")):"غير متوفر"}</div></div>
-      <div><label>التحديث الكامل كل ساعة</label><div class="calcbox" style="font-size:14px">${s.hourlyRefreshState==="ready"?"جاهز":s.hourlyRefreshState==="building"?"قيد التحديث":s.hourlyRefreshState==="error"?"فشل":"غير معروف"}<br>${Number(s.hourlyRefreshCompletedBatches||0).toLocaleString()}/${Number(s.hourlyRefreshTotalBatches||0).toLocaleString()} دفعة — ${Number(s.hourlyRefreshCompletedTickers||0).toLocaleString()}/${Number(s.hourlyRefreshTotalTickers||0).toLocaleString()} سهم<br>${s.hourlyRefreshPhase?escapeHtml(s.hourlyRefreshPhase):""}<br>${s.hourlyRefreshFinishedAt?escapeHtml(new Date(s.hourlyRefreshFinishedAt).toLocaleString("ar-SA")):s.hourlyRefreshStartedAt?escapeHtml(new Date(s.hourlyRefreshStartedAt).toLocaleString("ar-SA")):"غير متوفر"}</div></div><div><label>كاش الشورت والفائدة</label><div class="calcbox" style="font-size:14px">${Number(s.borrowRecords||0).toLocaleString()} سهم في الكاش — ${Number(s.borrowSuccessful||0).toLocaleString()} محدث / ${Number(s.borrowFailed||0).toLocaleString()} غير متوفر — ${s.borrowBuildStatus==="ready"?"جاهز":s.borrowBuildStatus==="building"?"قيد التحديث":s.borrowBuildStatus==="error"?"فشل":"غير معروف"}<br>${s.borrowBuildStatus==="building"?`${s.borrowCurrentMode==="retry"?"إعادة اختبار":"اختبار"}: ${Number(s.borrowDone||0)}/${Number(s.borrowTotal||0)} — السهم: ${escapeHtml(s.borrowCurrentTicker||"—")} — الجولة ${Number(s.borrowRound||0)}/9 — داخل الجولة ${Number(s.borrowCurrentAttemptInRound||0)}/${Number(s.borrowCurrentRoundTotal||0)}`:""}<br>${s.borrowUpdatedAt?escapeHtml(new Date(s.borrowUpdatedAt).toLocaleString("ar-SA")):"غير متوفر"}</div></div>
+      <div><label>تحديث البيانات الفنية والأسعار كل 5 دقائق</label><div class="calcbox" style="font-size:14px">${s.hourlyRefreshState==="ready"?"جاهز":s.hourlyRefreshState==="building"?"قيد التحديث":s.hourlyRefreshState==="error"?"فشل":"غير معروف"}<br>${Number(s.hourlyRefreshCompletedBatches||0).toLocaleString()}/${Number(s.hourlyRefreshTotalBatches||0).toLocaleString()} دفعة — ${Number(s.hourlyRefreshCompletedTickers||0).toLocaleString()}/${Number(s.hourlyRefreshTotalTickers||0).toLocaleString()} سهم<br>${s.hourlyRefreshPhase?escapeHtml(s.hourlyRefreshPhase):""}<br>${s.hourlyRefreshFinishedAt?escapeHtml(new Date(s.hourlyRefreshFinishedAt).toLocaleString("ar-SA")):s.hourlyRefreshStartedAt?escapeHtml(new Date(s.hourlyRefreshStartedAt).toLocaleString("ar-SA")):"غير متوفر"}</div></div><div><label>كاش الشورت والفائدة</label><div class="calcbox" style="font-size:14px">${Number(s.borrowRecords||0).toLocaleString()} سهم في الكاش — ${Number(s.borrowSuccessful||0).toLocaleString()} محدث / ${Number(s.borrowFailed||0).toLocaleString()} غير متوفر — ${s.borrowBuildStatus==="ready"?"جاهز":s.borrowBuildStatus==="building"?"قيد التحديث":s.borrowBuildStatus==="error"?"فشل":"غير معروف"}<br>${s.borrowBuildStatus==="building"?`${s.borrowCurrentMode==="retry"?"إعادة اختبار":"اختبار"}: ${Number(s.borrowDone||0)}/${Number(s.borrowTotal||0)} — السهم: ${escapeHtml(s.borrowCurrentTicker||"—")} — الجولة ${Number(s.borrowRound||0)}/9 — داخل الجولة ${Number(s.borrowCurrentAttemptInRound||0)}/${Number(s.borrowCurrentRoundTotal||0)}`:""}<br>${s.borrowUpdatedAt?escapeHtml(new Date(s.borrowUpdatedAt).toLocaleString("ar-SA")):"غير متوفر"}</div></div>
     </div>
     <div class="adminBox"><b>حالة الموقع:</b> ${mode}<br><b>نطاق الباحث:</b> آخر ${Number(s.cacheWindowDays||100)} يوم<br>${s.siteModeMessage?`<b>رسالة العملاء:</b> ${escapeHtml(s.siteModeMessage)}`:""}</div>
     <div class="small">آخر قراءة للإحصائيات: ${escapeHtml(new Date().toLocaleString("ar-SA"))}</div>`;

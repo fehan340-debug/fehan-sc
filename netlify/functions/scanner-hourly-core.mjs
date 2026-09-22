@@ -142,13 +142,21 @@ export async function runHourlyBuild({manual=false,force=true}={}){
   }
   const old=await store.get('scanner-cache-v1',{type:'json',consistency:'strong'});
   const lock=await store.get('scanner-hourly-lock-v2',{type:'json',consistency:'strong'});
-  if(!force && lock?.startedAt && Date.now()-new Date(lock.startedAt).getTime()<14*60*1000)return {ok:true,skipped:true};
+  if(!force && lock?.startedAt){
+    const lockAge=Date.now()-new Date(lock.startedAt).getTime();
+    // Scheduled runs are fixed at :00/:05/:10/... . Do not let the old 14-minute
+    // guard silently skip several five-minute cycles. If a previous build is still
+    // active, keep this run queued in Netlify instead of starting a second writer.
+    if(lockAge<20*60*1000){
+      return {ok:true,skipped:true,reason:'previous-five-minute-refresh-still-running',previousJobId:lock.jobId};
+    }
+  }
   const jobId=crypto.randomUUID(), startedAt=new Date().toISOString();
   await store.setJSON('scanner-hourly-lock-v2',{jobId,startedAt});
   await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'building',jobId,startedAt,manual,phase:'تجهيز قائمة Stock Split',totalBatches:1,completedBatches:0,totalTickers:0,completedTickers:0,failedTickers:[],error:null,publishedAt:null,updatedAt:startedAt});
   try{
     const universe=await getUniverse({refresh:false,maxAgeMs:24*60*60*1000});
-    // Each 10-minute publication refreshes Massive technical/live-price data.
+    // Each five-minute publication refreshes Massive technical/live-price data.
     // Short and Free Float remain independent prepared snapshots and are merged
     // immediately before publication so a slow scraper never blocks Massive.
     const snap=await snapshot(universe.tickers||[]);
@@ -214,7 +222,7 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     const publishedAt=new Date().toISOString();
     const versionKey=`scanner-cache-data-v2:${jobId}`;
     const ipoCache=await readIpoCache();
-    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'hourly-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-via-scrapingant-hourly-snapshot',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
+    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'five-minute-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-via-scrapingant-hourly-snapshot',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
     await store.setJSON(versionKey,payload);
     await writeDataBundle(payload);
     try{
@@ -238,10 +246,19 @@ export async function runHourlyBuild({manual=false,force=true}={}){
 }
 
 export async function readPublishedCache(){
+  // Workers publish their completed snapshots directly into Supabase. Always
+  // read the authoritative pointer first so a newly published Float/Short/
+  // Massive overlay is visible immediately; the compressed bundle is only a
+  // fallback for first-boot/recovery.
+  const store=getDataStore();
+  const p=await store.get('scanner-cache-pointer-v2',{type:'json',consistency:'strong'}).catch(()=>null);
+  if(p?.key){
+    const d=await store.get(p.key,{type:'json',consistency:'strong'}).catch(()=>null);
+    if(d?.ready&&Array.isArray(d.records))return d;
+  }
+  const direct=await store.get('scanner-cache-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+  if(direct?.ready&&Array.isArray(direct.records))return direct;
   const bundled=await readDataBundle();
   if(bundled?.ready&&Array.isArray(bundled.records))return bundled;
-  const store=getDataStore();
-  const p=await store.get('scanner-cache-pointer-v2',{type:'json',consistency:'strong'});
-  if(p?.key){const d=await store.get(p.key,{type:'json',consistency:'strong'});if(d?.ready&&Array.isArray(d.records))return d;}
-  return await store.get('scanner-cache-v1',{type:'json',consistency:'strong'});
+  return direct;
 }

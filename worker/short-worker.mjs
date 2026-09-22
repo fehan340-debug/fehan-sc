@@ -17,14 +17,6 @@ async function updateCacheStatus(fields={}){
   await setJson('cache_status',{...current,...fields,last_short_update:fields.last_short_update||now,updated_at:now});
 }
 
-async function publishShortOverlay(ticker,b,stamp){
-  const key='scanner-short-overlay-v1';
-  const current=await getJson(key);
-  const records=current?.records&&typeof current.records==='object'?{...current.records}:{};
-  records[ticker]={ticker,shares:finite(b?.shares),fee:finite(b?.fee),updatedAt:b?.updatedAt||stamp,source:b?.source||null,state:'ready'};
-  await setJson(key,{version:1,updatedAt:stamp,records});
-}
-
 function supportedExchange(value){return ['XNAS','XNYS','XASE'].includes(String(value||'').toUpperCase());}
 
 async function instantPublish(ticker,b,stamp){
@@ -51,9 +43,9 @@ async function finish(job,stamp){
   await setJson('scanner-borrow-pointer-v2',{version:5,key:versionedKey,updatedAt:stamp,total:job.total,liveCount:doneUnique,missingCount:Math.max(0,job.total-doneUnique)});
   await setJson('scanner-borrow-v1',payload);
   await setJson('scanner-borrow-v2',payload);
-  // Publish the completed short snapshot into the same market snapshot that the
-  // browser reads immediately after the full scrape completes, not at the next
-  // hour, so the newest complete short dataset becomes customer-visible at once.
+  // Publish the completed short snapshot only at the scheduled top of the hour.
+  // Individual ticker results stay in the worker's private progress/job storage
+  // while the scrape is running; the customer-facing cache is never changed per ticker.
   const central=await getJson('scanner-cache-v1');
   if(central?.ready&&Array.isArray(central.records)){
     const shortMap=job.records||{};
@@ -87,10 +79,12 @@ async function createJob(trigger){
   const records=previous?.records&&typeof previous.records==='object'?{...previous.records}:{};
   const exchangeByTicker=Object.fromEntries(tickers.map(t=>[t,String(universe?.references?.[t]?.primary_exchange||'').toUpperCase()]));
   const now=new Date().toISOString();
-  // Publish the completed snapshot as soon as this worker finishes.
-  // The scheduler controls when the job starts; it must not delay publication
-  // until the next hour after the scrape has already completed.
-  const job={active:true,engineVersion:ENGINE_VERSION,jobId:crypto.randomUUID(),triggerSource:trigger?.source||'external-worker',startedAt:now,tickers,exchangeByTicker,cursor:0,attempted:0,successful:0,failed:0,records,universeUpdatedAt:universe?.updatedAt||null,total:tickers.length,lastActivityAt:now,publishAt:now};
+  // The scraper runs once per hour. Results are saved while the worker runs,
+  // but the customer-facing snapshot is published at the next exact top-of-hour.
+  const nextHour=new Date(now);
+  nextHour.setUTCMinutes(0,0,0);
+  if(nextHour.getTime()<=Date.now()) nextHour.setUTCHours(nextHour.getUTCHours()+1);
+  const job={active:true,engineVersion:ENGINE_VERSION,jobId:crypto.randomUUID(),triggerSource:trigger?.source||'external-worker',startedAt:now,tickers,exchangeByTicker,cursor:0,attempted:0,successful:0,failed:0,records,universeUpdatedAt:universe?.updatedAt||null,total:tickers.length,lastActivityAt:now,publishAt:nextHour.toISOString()};
   await setJson(JOB_KEY,job);
   await setJson(STATUS_KEY,{state:'building',jobId:job.jobId,startedAt:now,finishedAt:null,error:null,total:job.total,done:0,attempts:0,successful:0,failed:0,records:Object.keys(records).length,phase:'one-by-one',timeoutMs:TIMEOUT_MS,mode:'external-github-actions',worker:'github-actions'});
   return job;
@@ -152,7 +146,8 @@ async function processTicker(job,ticker){
   if(shortOk){
     try{
       await instantPublish(ticker,{...value,updatedAt:stamp},stamp);
-      await publishShortOverlay(ticker,{...value,updatedAt:stamp},stamp);
+      // Do not update any customer-facing cache here. The completed snapshot is
+      // published once at finish(), which waits for job.publishAt (top of hour).
       await updateCacheStatus({last_short_update:stamp,short_state:'building',short_ticker:ticker,short_job_id:job.jobId});
     }catch(publishError){console.warn('[external-short-worker] immediate publish failed',{ticker,error:String(publishError?.message||publishError)});}
   }

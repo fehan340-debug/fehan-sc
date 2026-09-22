@@ -1,6 +1,6 @@
 # Scanner data pipeline
 
-- **Massive** is the only source for stock prices and technical data. The technical/live-price lane refreshes every 10 minutes.
+- **Massive** is the only source for stock prices and technical data. The technical/live-price lane refreshes every 5 minutes.
 - **Stock Splits (rolling 100 days)** are rebuilt once per trading day at 09:30 America/New_York.
 - **Free Float** is fetched only from Finviz through **ScrapingAnt** with `browser=false` (no JavaScript rendering) and is refreshed once per day with the split universe.
 - **Short / Available Shares / Borrow Fee** are fetched only from ChartExchange through **ScrapingAnt**, with a 15-second timeout and `browser=false`. ChartExchange is never used as a Free Float source.

@@ -103,11 +103,32 @@ export async function evaluateUserAlerts(email,records){
     if(a.drop?.enabled){ const hit=a.drop.mode==='price' ? (Number.isFinite(price)&&price<=Number(a.drop.value)) : (Number.isFinite(change)&&change<=-Math.abs(Number(a.drop.value))); checks.push(['drop',hit,a.drop.mode==='price'?`وصل السعر إلى $${price.toFixed(2)}`:`هبوط ${Math.abs(change).toFixed(2)}%`]); }
     if(a.short?.enabled) checks.push(['short',Number.isFinite(short)&&short<=Number(a.short.value),`الشورت ${short.toLocaleString()}`]);
     if(a.rsi?.enabled){ const v=Number(a.rsi.value), hit=a.rsi.direction==='above'?(Number.isFinite(rsi)&&rsi>=v):(Number.isFinite(rsi)&&rsi<=v); checks.push(['rsi',hit,`RSI ${rsi.toFixed(1)}`]); }
-    for(const [type,hit,detail] of checks){ const sk=`${ticker}:${type}`; const prev=nextState[sk]||{}; const was=Boolean(prev.hit); if(hit&&!was){
+    for(const [type,hit,detail] of checks){
+      const sk=`${ticker}:${type}`; const prev=nextState[sk]||{}; const was=Boolean(prev.hit);
+      if(hit&&!was){
         const title=`تنبيه ${ticker}`; const message=`${ticker}: ${detail}`;
-        const users=await getUsers(); const user=users[String(email).toLowerCase()]; if(user?.telegramChatId){ try{ await sendTelegram(user.telegramChatId,`🔔 ${title}\n${message}`); }catch(e){ console.warn('Telegram send failed',ticker,type,e.message); } }
-        fired.push({ticker,type,title,message,createdAt:new Date().toISOString()}); nextState[sk]={hit:true,updatedAt:new Date().toISOString()}; changed=true;
-      } else if(!hit&&was){ nextState[sk]={hit:false,updatedAt:new Date().toISOString()}; changed=true; }
+        const users=await getUsers(); const user=users[String(email).toLowerCase()];
+        let delivered=true;
+        if(user?.telegramChatId){
+          try{
+            const result=await sendTelegram(user.telegramChatId,`🔔 ${title}\n${message}`);
+            delivered=Boolean(result?.sent);
+          }catch(e){
+            delivered=false;
+            console.warn('Telegram send failed; alert will retry on next sweep',ticker,type,e.message);
+          }
+        }
+        fired.push({ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:delivered});
+        // Only consume the trigger edge after Telegram accepted the message.
+        // A transient Telegram/API failure must never permanently lose the alert.
+        if(delivered){
+          nextState[sk]={hit:true,updatedAt:new Date().toISOString()};
+          changed=true;
+        }
+      } else if(!hit&&was){
+        nextState[sk]={hit:false,updatedAt:new Date().toISOString()};
+        changed=true;
+      }
     }
   }
   if(fired.length){let savedAny=false;for(const event of fired){const saved=await appendAlertHistory(email,event).catch(e=>{console.warn('alert history save failed',e.message);return false;});savedAny=savedAny||saved;}if(!savedAny)await getDataStore().setJSON(keyFor(email,'history'),[...fired,...history].slice(0,100));}

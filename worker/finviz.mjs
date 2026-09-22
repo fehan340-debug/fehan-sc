@@ -5,12 +5,17 @@ const SCRAPINGANT='https://api.scrapingant.com/v2/general';
 
 function parseNumber(value){
   if(value==null)return null;
-  const s=String(value).replace(/\u00a0/g,' ').replace(/,/g,'').trim();
-  const m=s.match(/(-?\d+(?:\.\d+)?)\s*(K|M|B|T)?/i);
+  const s=String(value)
+    .replace(/&nbsp;|\u00a0/gi,' ')
+    .replace(/,/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
+  const m=s.match(/(-?(?:\d+(?:\.\d+)?|\.\d+))\s*(K|M|B|T)?(?:\b|$)/i);
   if(!m)return null;
   const n=Number(m[1]);
   if(!Number.isFinite(n))return null;
-  return n*({K:1e3,M:1e6,B:1e9,T:1e12}[String(m[2]||'').toUpperCase()]||1);
+  const multiplier={K:1e3,M:1e6,B:1e9,T:1e12}[String(m[2]||'').toUpperCase()]||1;
+  return n*multiplier;
 }
 function clean(s){return String(s??'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();}
 

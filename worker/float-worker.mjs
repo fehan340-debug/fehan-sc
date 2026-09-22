@@ -71,7 +71,9 @@ async function main(){
   await setJson(JOB_KEY,job);
   await setJson(STATUS_KEY,{state:'building',date,startedAt,finishedAt:null,total:tickers.length,done:0,successful:0,failed:0,currentTicker:null,source:'finviz-via-scrapingant'});
 
-  // Two concurrent requests balance throughput with Finviz/ScrapingAnt rate limits.
+  // Finviz/ScrapingAnt is intentionally processed sequentially. A full 500ms
+  // gap between requests prevents burst/rate-limit skips and makes the run
+  // deterministic for symbols such as SXTC.
   let idx=0;
   const worker=async()=>{
     while(true){
@@ -102,10 +104,10 @@ async function main(){
       if(job.cursor===1||job.cursor%5===0||job.cursor===job.total){
         await setJson(STATUS_KEY,{state:job.cursor===job.total?'publishing':'building',date,startedAt,finishedAt:null,total:job.total,done:job.cursor,successful:job.successful,failed:job.failed,currentTicker:ticker,updatedAt:job.lastActivityAt,source:'finviz-via-scrapingant'});
       }
-      if(i+1<tickers.length)await sleep(Math.max(0,Number(process.env.FINVIZ_DELAY_MS||250)));
+      if(i+1<tickers.length)await sleep(Math.max(500,Number(process.env.FINVIZ_DELAY_MS||500)));
     }
   };
-  await Promise.all([worker(),worker()]);
+  await worker();
   const completedAt=new Date().toISOString();
   await setJson('scanner-finviz-float-daily-v1',{version:1,state:'ready',date,startedAt,completedAt,total:job.total,successful:job.successful,failed:job.failed,universeUpdatedAt:job.universeUpdatedAt,source:'finviz-via-scrapingant'});
   await publishFloatSnapshot(job,completedAt);

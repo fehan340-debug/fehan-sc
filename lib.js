@@ -129,6 +129,9 @@ export function deviceCandidatesFrom(request){
   for(const v of [h,c]) if(v && !out.includes(v)) out.push(v);
   return out;
 }
+export function deviceFingerprintFrom(request){
+  return String(request.headers.get("x-device-fingerprint")||"").trim();
+}
 export function setDeviceCookie(deviceId){
   return `scanner_device_id=${encodeURIComponent(String(deviceId||""))}; Path=/; Secure; SameSite=Lax; Max-Age=31536000`;
 }
@@ -202,9 +205,18 @@ export async function currentUser(request){
   if(!u || u.status!=="active") return null;
   const isAdmin=u.admin===true || s.email===(process.env.ADMIN_EMAIL||"").trim().toLowerCase();
   const devs=deviceCandidatesFrom(request);
+  const fingerprint=deviceFingerprintFrom(request);
   if(!isAdmin){
-    if(!u.deviceId && devs.length){u.deviceId=devs[0];users[s.email]=u;await saveUsers(users);}
-    if(u.deviceId && devs.length && !devs.includes(String(u.deviceId))) return {blocked:true,user:u};
+    if(!u.deviceId && devs.length){u.deviceId=devs[0];}
+    if(!u.deviceFingerprint && fingerprint){u.deviceFingerprint=fingerprint;}
+    if((u.deviceId || u.deviceFingerprint) && devs.length){
+      const idMatch=devs.includes(String(u.deviceId||""));
+      const fingerprintMatch=Boolean(fingerprint && u.deviceFingerprint && fingerprint===String(u.deviceFingerprint));
+      if(!idMatch && !fingerprintMatch) return {blocked:true,user:u};
+    }
+    if((u.deviceId || u.deviceFingerprint) && !devs.length && !fingerprint) return {blocked:true,user:u};
+    users[s.email]=u;
+    await saveUsers(users);
   }
   if(u.expiresAt && Date.now()>new Date(u.expiresAt).getTime()) return null;
   if(!isAdmin){

@@ -153,7 +153,7 @@ export default async function(request){
     }
     if(action==="reset-device"){
       const email=String(b.email||"").trim().toLowerCase();if(!users[email])return json({error:"العميل غير موجود"},404);
-      users[email].deviceId=null;await saveUsers(users);return json({ok:true,deviceId:null,email});
+      users[email].deviceId=null;users[email].deviceFingerprint=null;await saveUsers(users);return json({ok:true,deviceId:null,email});
     }
     if(action==="delete"){
       const email=String(b.email||"").trim().toLowerCase();

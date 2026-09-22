@@ -10,7 +10,7 @@ export default async function(){
   const hour=Number(parts.find(x=>x.type==='hour')?.value||0);
   const minute=Number(parts.find(x=>x.type==='minute')?.value||0);
   if(['Sat','Sun'].includes(weekday)||hour<4||hour>=20)return new Response('outside automatic short window',{status:200});
-  if(minute!==30)return new Response('waiting for automatic short minute',{status:200});
+  if(minute!==30)return new Response('waiting for automatic short start at minute 30; publication is at the next top of hour',{status:200});
   const store=getDataStore();
   const active=await store.get('scanner-borrow-job-v4',{type:'json',consistency:'strong'}).catch(()=>null);
   if(active?.active)return new Response('short update already running',{status:200});

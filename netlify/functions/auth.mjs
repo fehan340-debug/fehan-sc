@@ -1,4 +1,4 @@
-import { json,readJson,cookieMap,setSessionCookie,setDeviceCookie,clearSessionCookie,randomToken,getUsers,verifyPassword,saveUsers,currentUser,safeUser,deviceCandidatesFrom,ensureAdmin,getSiteSettings,getFavorites,saveFavorites,getUserSettingsStore,getSessionStore } from "../../lib.js";
+import { json,readJson,cookieMap,setSessionCookie,setDeviceCookie,clearSessionCookie,randomToken,getUsers,verifyPassword,saveUsers,currentUser,safeUser,deviceCandidatesFrom,deviceFingerprintFrom,ensureAdmin,getSiteSettings,getFavorites,saveFavorites,getUserSettingsStore,getSessionStore } from "../../lib.js";
 export default async function(request){
   try{
     await ensureAdmin();
@@ -82,27 +82,19 @@ export default async function(request){
       const site=await getSiteSettings();
       if(!isAdmin && site.siteMode!=="normal") return json({maintenance:true,mode:site.siteMode,message:site.siteModeMessage||"الموقع متوقف مؤقتًا، الرجاء المحاولة لاحقًا."},503);
       const devs=deviceCandidatesFrom(request);
+      const fingerprint=deviceFingerprintFrom(request);
       if(!isAdmin){
-        // A valid session on this browser is stronger evidence than a regenerated
-        // localStorage/device header. Safari/iOS can recreate browser storage while
-        // keeping the login session. In that case repair the binding instead of
-        // falsely reporting that the account belongs to another device.
-        const existingSession=cookieMap(request).scanner_session;
-        let sameBrowserSession=null;
-        if(existingSession){
-          sameBrowserSession=await getSessionStore().get(`session:${existingSession}`,{type:'json',consistency:'strong'}).catch(()=>null);
-          if(sameBrowserSession?.email && String(sameBrowserSession.email).toLowerCase()!==username) sameBrowserSession=null;
+        // Device lock is preserved, but the lock is now physical-device based rather
+        // than browser-storage based. Safari, Chrome and Google Chrome on the same
+        // phone/computer therefore share the same device fingerprint.
+        if(!u.deviceId && devs.length) u.deviceId=devs[0];
+        if(!u.deviceFingerprint && fingerprint) u.deviceFingerprint=fingerprint;
+        if((u.deviceId || u.deviceFingerprint) && devs.length){
+          const idMatch=devs.includes(String(u.deviceId||""));
+          const fingerprintMatch=Boolean(fingerprint && u.deviceFingerprint && fingerprint===String(u.deviceFingerprint));
+          if(!idMatch && !fingerprintMatch) return json({error:"هذا الحساب مرتبط بجهاز آخر."},403);
         }
-        if(u.deviceId && devs.length && !devs.includes(String(u.deviceId))){
-          if(sameBrowserSession?.deviceId){
-            u.deviceId=String(sameBrowserSession.deviceId);
-            users[username]=u;
-            await saveUsers(users);
-          }else{
-            return json({error:"هذا الحساب مرتبط بجهاز آخر."},403);
-          }
-        }
-        if(!u.deviceId && devs.length){u.deviceId=devs[0];users[username]=u;await saveUsers(users);}
+        if((u.deviceId || u.deviceFingerprint) && !devs.length && !fingerprint) return json({error:"تعذر التحقق من الجهاز. حدّث الصفحة وحاول مرة أخرى."},403);
       }
       const now=new Date().toISOString();
       // Mark the account as having completed at least one successful login.
