@@ -128,7 +128,7 @@ async function buildTicker(t,events,refs,snap,borrow){
 
 function coreValid(r){return ['current','splitOpen','rsi','ma5','ma20','ema20','ema50','cci','changePct'].every(k=>Number.isFinite(Number(r?.[k])));}
 
-export async function runHourlyBuild({manual=false,force=true}={}){
+export async function runHourlyBuild({manual=false,force=true,snapOverride=null,deferPublish=false}={}){
   const store=getDataStore();
   if(!manual){
     const settings=await getSiteSettings().catch(()=>({auto_update_enabled:true}));
@@ -155,11 +155,16 @@ export async function runHourlyBuild({manual=false,force=true}={}){
   await store.setJSON('scanner-hourly-lock-v2',{jobId,startedAt});
   await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'building',jobId,startedAt,manual,phase:'تجهيز قائمة Stock Split',totalBatches:1,completedBatches:0,totalTickers:0,completedTickers:0,failedTickers:[],error:null,publishedAt:null,updatedAt:startedAt});
   try{
-    const universe=await getUniverse({refresh:false,maxAgeMs:24*60*60*1000});
-    // Each five-minute publication refreshes Massive technical/live-price data.
+    // The Stock Split universe is a separate daily lane. Never refresh it from
+    // the five-minute technical/Massive lane. The daily market-open worker owns it.
+    let universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'}).catch(()=>null);
+    if(!universe?.tickers?.length){
+      universe=await getUniverse({refresh:true,maxAgeMs:0});
+    }
+    // Each five-minute Massive run refreshes technical + live-price data.
     // Short and Free Float remain independent prepared snapshots and are merged
     // immediately before publication so a slow scraper never blocks Massive.
-    const snap=await snapshot(universe.tickers||[]);
+    const snap=snapOverride||await snapshot(universe.tickers||[]);
     const borrow=await readBorrowCache();
     const borrowRecords=borrow.records||{};
     const floatCache=await store.get('scanner-float-data-v1',{type:'json',consistency:'strong'}).catch(()=>null);
@@ -223,6 +228,12 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     const versionKey=`scanner-cache-data-v2:${jobId}`;
     const ipoCache=await readIpoCache();
     const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'five-minute-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-via-scrapingant-hourly-snapshot',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
+    if(deferPublish){
+      const prepared={...payload,preparedAt:publishedAt,publicationPending:true};
+      await store.setJSON('scanner-technical-pending-v1',prepared);
+      await store.setJSON('scanner-hourly-refresh-v1',{version:9,state:'ready',jobId,startedAt:null,finishedAt:publishedAt,manual,phase:'اكتمل تجهيز بيانات Massive الفنية والأسعار — تنتظر دورة النشر التالية',totalBatches:1,completedBatches:1,totalTickers:entries.length,completedTickers:entries.length,failedTickers:failed.slice(0,50),error:null,publishedAt:null,preparedAt:publishedAt,updatedAt:publishedAt,universeUpdatedAt:universe.updatedAt,successRate,requiredRows,missingRows:missingKeys.length,rowsWithBorrow:finalRows.filter(r=>r.shortDataState==='ready').length});
+      return {ok:true,prepared:true,records:finalRows.length,tickers:entries.length,failed:failed.length,preparedAt:publishedAt};
+    }
     await store.setJSON(versionKey,payload);
     await writeDataBundle(payload);
     try{
@@ -243,6 +254,48 @@ export async function runHourlyBuild({manual=false,force=true}={}){
     await store.setJSON('scanner-hourly-refresh-v1',{version:8,state:'error',jobId,startedAt:null,finishedAt:new Date().toISOString(),phase:'فشل التحديث وتم الإبقاء على آخر كاش مكتمل',error:message,updatedAt:new Date().toISOString()});
     throw e;
   }finally{const l=await store.get('scanner-hourly-lock-v2',{type:'json',consistency:'strong'}).catch(()=>null);if(l?.jobId===jobId)await store.delete('scanner-hourly-lock-v2').catch(()=>{});}
+}
+
+export async function publishPreparedTechnical(){
+  const store=getDataStore();
+  const pending=await store.get('scanner-technical-pending-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+  if(!pending?.ready||!Array.isArray(pending.records)||!pending.records.length)return {ok:true,skipped:true,reason:'no-pending-technical-snapshot'};
+  const publishedAt=new Date().toISOString();
+  const latestBorrow=await readBorrowCache().catch(()=>null);
+  const borrowRecords=latestBorrow?.records||{};
+  const latestFloat=await store.get('scanner-float-data-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+  const floatRecords=latestFloat?.records||{};
+  const records=pending.records.map(row=>{
+    const t=String(row?.ticker||'').toUpperCase();
+    const b=borrowRecords[t], f=floatRecords[t];
+    let x={...row};
+    if(b){
+      const bs=Number(b.shares),bf=Number(b.fee);
+      x={...x,shortShares:Number.isFinite(bs)?bs:null,borrowFee:Number.isFinite(bf)?bf:null,shortDataState:Number.isFinite(bs)&&Number.isFinite(bf)?'ready':(x.shortDataState||'unavailable'),shortDataSource:b.source||x.shortDataSource||null,shortDataUpdatedAt:b.updatedAt||x.shortDataUpdatedAt||null};
+    }
+    if(f&&Number.isFinite(Number(f.freeFloat))){
+      const ff=Number(f.freeFloat);
+      x={...x,freeFloat:ff,free_float:ff,freeFloatSource:f.freeFloatSource||'finviz-scrapingant',freeFloatUpdatedAt:f.freeFloatUpdatedAt||x.freeFloatUpdatedAt||null};
+    }
+    return x;
+  });
+  const payload={...pending,records,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,technicalPreparedAt:pending.preparedAt||pending.technicalPreparedAt||null,fullRefreshAt:publishedAt,publicationPending:false,shortUpdatedAt:latestBorrow?.updatedAt||pending.shortUpdatedAt||null};
+  const versionKey=`scanner-cache-data-v3:${pending.preparedAt||publishedAt}`;
+  await store.setJSON(versionKey,payload);
+  await writeDataBundle(payload);
+  try{
+    await mirrorCentralSnapshot(payload);
+    await store.setJSON('scanner-central-status-v1',{state:'ready',updatedAt:publishedAt,records:records.length,ipoRecords:Array.isArray(payload.ipos)?payload.ipos.length:0,storage:'supabase'});
+  }catch(e){
+    console.error('[central-supabase] mirror failed during prepared publication',String(e?.message||e));
+    await store.setJSON('scanner-central-status-v1',{state:'mirror-error',updatedAt:publishedAt,error:String(e?.message||e),records:records.length,storage:'supabase'}).catch(()=>{});
+  }
+  await store.setJSON('scanner-cache-pointer-v2',{version:2,key:versionKey,updatedAt:publishedAt,records:records.length,technicalUpdatedAt:payload.technicalUpdatedAt,shortUpdatedAt:payload.shortUpdatedAt});
+  await store.setJSON('scanner-cache-v1',payload);
+  await store.setJSON('scanner-cache-status',{state:'ready',jobId:null,startedAt:null,finishedAt:publishedAt,error:null,records:records.length,tickers:records.length,expectedRows:payload.expectedRows||records.length,missingRows:payload.missingRows||0,missing:payload.missing||[],successRate:payload.successRate||1,requiredRows:payload.requiredRows||records.length,publicationMode:'five-minute-next-cycle',preparedAt:payload.preparedAt||null});
+  await store.setJSON('scanner-hourly-refresh-v1',{version:9,state:'ready',jobId:null,startedAt:null,finishedAt:publishedAt,manual:false,phase:'تم نشر لقطة Massive الفنية والأسعار المجهزة من الدورة السابقة',totalBatches:1,completedBatches:1,totalTickers:records.length,completedTickers:records.length,failedTickers:payload.failedTickers||[],error:null,publishedAt,preparedAt:payload.preparedAt||null,updatedAt:publishedAt,universeUpdatedAt:payload.splitsUpdatedAt||null,publicationMode:'five-minute-next-cycle'});
+  await store.delete('scanner-technical-pending-v1').catch(()=>{});
+  return {ok:true,published:true,records:records.length,publishedAt,preparedAt:payload.preparedAt||null};
 }
 
 export async function readPublishedCache(){

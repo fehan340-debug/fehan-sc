@@ -879,6 +879,16 @@ async function saveBank(){
 }
 function updateTelegramLinks(url){const u=String(url||"").trim();["loginTelegram","requestTelegram"].forEach(id=>{const a=$(id);if(!a)return;if(u){a.href=u;a.style.display="block";}else{a.removeAttribute("href");a.style.display="none";}})}
 async function loadTelegramLink(){try{const d=await getJSON('/.netlify/functions/alerts?action=telegram-link');telegramState=d.telegram||{linked:false,link:null};renderTelegramLinkState();}catch(e){alert(e.message||'تعذر إنشاء رابط تليجرام.');}}
+async function sendTelegramAlertTest(){
+  const btn=$('telegramTestBtn');
+  if(btn)btn.disabled=true;
+  try{
+    const d=await getJSON('/.netlify/functions/alerts?action=telegram-test');
+    if(d.ok)alert('تم إرسال رسالة الاختبار إلى تليجرام. إذا ظهرت في البوت فمسار التنبيهات يعمل.');
+    else throw Error(d.error||'تعذر إرسال الاختبار.');
+  }catch(e){alert(e.message||'تعذر إرسال اختبار تليجرام.');}
+  finally{if(btn)btn.disabled=false;}
+}
 async function setupTelegramWebhook(){const btn=$('setupTelegramWebhook'),msg=$('telegramWebhookMsg');if(!btn)return;btn.disabled=true;msg.textContent='جاري تفعيل ربط البوت...';try{const d=await adminAction('setup-telegram-webhook',{});msg.textContent=`تم تفعيل البوت: ${d.webhook}`;}catch(e){msg.textContent=e.message||'تعذر تفعيل Webhook.';}finally{btn.disabled=false;}}
 async function sendTelegramBroadcast(){const btn=$('telegramBroadcastBtn'),msg=$('telegramBroadcastMsg'),box=$('telegramBroadcastText');if(!box?.value.trim()){msg.textContent='اكتب الرسالة أولاً.';return;}btn.disabled=true;msg.textContent='جاري الإرسال لجميع المرتبطين بتليجرام...';try{const r=await apiFetch('/.netlify/functions/telegram-broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:box.value.trim()})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر الإرسال.');msg.textContent=`تم الإرسال بنجاح إلى ${d.sent||0} مشترك. فشل ${d.failed||0}.`; }catch(e){msg.textContent=e.message||'تعذر الإرسال الجماعي.';}finally{btn.disabled=false;}}
 async function saveTelegram(){
@@ -1206,7 +1216,7 @@ setLoadSelected("scanner");
 
 // نظام التنبيهات والمفضلة
 $('alertClose')?.addEventListener('click',()=>$('alertModal').classList.remove('show'));
-$('alertSave')?.addEventListener('click',saveAlertSettings);$('telegramAlertLink')?.addEventListener('click',loadTelegramLink);$('telegramAlertLinkModal')?.addEventListener('click',loadTelegramLink);$('setupTelegramWebhook')?.addEventListener('click',setupTelegramWebhook);$('telegramBroadcastBtn')?.addEventListener('click',sendTelegramBroadcast);
+$('alertSave')?.addEventListener('click',saveAlertSettings);$('telegramAlertLink')?.addEventListener('click',loadTelegramLink);$('telegramTestBtn')?.addEventListener('click',sendTelegramAlertTest);$('telegramAlertLinkModal')?.addEventListener('click',loadTelegramLink);$('setupTelegramWebhook')?.addEventListener('click',setupTelegramWebhook);$('telegramBroadcastBtn')?.addEventListener('click',sendTelegramBroadcast);
 $('alertDisable')?.addEventListener('click',disableAlert);
 $('notificationBell')?.addEventListener('click',openNotificationBell);
 $('notificationClose')?.addEventListener('click',()=>$('notificationPanel').classList.remove('show'));

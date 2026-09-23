@@ -1,4 +1,5 @@
 import { store } from './store.mjs';
+import { runHourlyBuild, publishPreparedTechnical } from '../netlify/functions/scanner-hourly-core.mjs';
 
 const BASE='https://api.massive.com';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -78,25 +79,38 @@ async function snapshot(tickers){
 
 async function main(){
   if(!(await automaticUpdatesEnabled())){console.log(JSON.stringify({ok:true,skipped:true,reason:"automatic-updates-disabled"}));return;}
+
+  // Pipeline contract:
+  // 1) At :00/:05/:10/... publish the completed technical+price snapshot
+  //    prepared by the previous cycle.
+  // 2) Only after that publication, fetch a fresh Massive snapshot and build
+  //    the next technical snapshot for the following five-minute publication.
+  const publication=await publishPreparedTechnical().catch(e=>({ok:false,error:String(e?.message||e)}));
+  if(publication?.error)console.warn('[massive-pipeline] previous prepared publication failed; building the next snapshot anyway.',publication.error);
+
   const now=new Date(),session=marketSession(now);
-  const universe=await store.get('scanner-universe-v2');
+  const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'});
   const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
-  if(!tickers.length)throw new Error('لا توجد قائمة أسهم معتمدة لتحديث Massive.');
+  if(!tickers.length)throw new Error('لا توجد قائمة أسهم معتمدة لتحديث Massive. نفّذ التحديث اليومي لقائمة Stock Split أولاً.');
+
   const snap=await snapshot(tickers),map={};
-  for(const x of snap.tickers||[]){const t=String(x?.ticker||'').toUpperCase();if(!t)continue;const row=choosePrice(x,session,now);if(row)map[t]={...row,updatedAt:now.toISOString()};}
-  const payload={version:2,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length};
-  await store.setJSON('scanner-massive-current-v1',payload);
-  await store.setJSON('scanner-current-price-v1',payload);
-  await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
-  await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:now.toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
-  const pointer=await store.get('scanner-cache-pointer-v2');
-  const cache=(pointer?.key?await store.get(pointer.key):null)||await store.get('scanner-cache-v1');
-  if(cache?.ready&&Array.isArray(cache.records)){
-    const records=cache.records.map(row=>{const live=map[String(row?.ticker||'').toUpperCase()];return live?{...row,current:live.price,currentPrice:live.price,preMarketPrice:live.preMarket,afterHoursPrice:live.afterHours,priceSession:live.priceSession,priceSource:live.priceSource,currentUpdatedAt:live.updatedAt,changePct:live.changePct}:row;});
-    const merged={...cache,records,currentUpdatedAt:now.toISOString(),massiveCurrentUpdatedAt:now.toISOString()};
-    await store.setJSON('scanner-cache-v1',merged);await store.setJSON('scanner-central-cache-v1',merged);
+  for(const x of snap.tickers||[]){
+    const t=String(x?.ticker||'').toUpperCase();
+    if(!t)continue;
+    const row=choosePrice(x,session,now);
+    if(row)map[t]={...row,updatedAt:now.toISOString()};
   }
-  await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:now.toISOString(),massive_updated_at:now.toISOString(),massive_session:session});
-  console.log(JSON.stringify({ok:true,session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length}));
+  const snapMap=new Map(Object.entries(map));
+
+  // Technical indicators are calculated in the SAME Massive five-minute
+  // pipeline. The daily Stock Split/IPO universe is not refreshed here.
+  const prepared=await runHourlyBuild({manual:true,force:true,snapOverride:snapMap,deferPublish:true});
+
+  await store.setJSON('scanner-massive-current-v1',{version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,technicalPreparedAt:prepared?.preparedAt||null,nextPublication:'next-five-minute-cycle'});
+  await store.setJSON('scanner-current-price-v1',{version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
+  await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
+  await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:new Date().toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null,technicalPreparedAt:prepared?.preparedAt||null,publication:publication?.publishedAt||null});
+  await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:now.toISOString(),massive_updated_at:now.toISOString(),massive_session:session,technical_prepared_at:prepared?.preparedAt||null,technical_publication_at:publication?.publishedAt||null});
+  console.log(JSON.stringify({ok:true,session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,preparedAt:prepared?.preparedAt||null,publishedPrevious:publication?.published||false,publishedAt:publication?.publishedAt||null}));
 }
 main().catch(async e=>{console.error(e);await store.setJSON('scanner-current-price-status',{state:'error',updatedAt:new Date().toISOString(),error:String(e?.message||e)}).catch(()=>{});process.exitCode=1;});

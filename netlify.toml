@@ -13,5 +13,6 @@
 # - Short/borrow: starts at minute 30 and publishes at the next top of the hour.
 # - Stock Splits (rolling 100 days) + Finviz Free Float: once daily at 09:30 America/New_York.
 # - IPO snapshot: once daily.
-# Netlify cron invokes the relevant checks; each function validates America/New_York time so DST is handled correctly.
-# Customer scanner responses are protected by a 5-minute server/edge cache layer.
+# GitHub Actions owns the Massive five-minute technical/live-price pipeline.
+# Netlify cron is used only for the independent daily/alert lanes.
+# Customer scanner responses are protected by no-store server responses.
