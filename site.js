@@ -55,7 +55,19 @@ async function responseJSON(r){
 let stopped=false,paused=false,running=false,results=0,scanned=0,scanAbortController=null;
 let favoriteItems=[],favoriteRefreshTimer=null,favoriteRefreshing=false;
 let alertSettings={}, alertTickerCurrent="", telegramState={linked:false,link:null};
-async function loadAlertSettings(){try{const d=await getJSON('/.netlify/functions/alerts?action=settings');alertSettings=d.settings||{};telegramState=d.telegram||{linked:false,link:null};renderTelegramLinkState();}catch(e){console.warn('alerts settings',e.message);}}
+async function loadAlertSettings(){
+  try {
+    const d = await getJSON('/.netlify/functions/alerts?action=settings');
+    alertSettings = (d && d.settings) ? d.settings : {};
+    telegramState = (d && d.telegram) ? d.telegram : { linked: false, link: null };
+  } catch(e) {
+    console.error("Alerts Load Error:", e);
+    alertSettings = alertSettings || {};
+    telegramState = telegramState || { linked: false, link: null };
+  } finally {
+    renderTelegramLinkState();
+  }
+}
 function renderTelegramLinkState(){const status=$('telegramAlertStatus'),btn=$('telegramAlertLink'),modalBtn=$('telegramAlertLinkModal');if(telegramState?.linked){if(status)status.textContent='تم ربط حسابك بتليجرام.';[btn,modalBtn].forEach(x=>{if(x)x.style.display='none';});}else{if(status)status.textContent='يرجى ربط حسابك بتليجرام لتلقي التنبيهات فوراً على جوالك';[btn,modalBtn].forEach(x=>{if(x){x.style.display=telegramState?.link?'inline-flex':'none';if(telegramState?.link)x.href=telegramState.link;}});}}
 function updateAlertDropInput(){const mode=$('alertDropMode')?.value||'percent',input=$('alertDropValue');if(!input)return;input.placeholder=mode==='price'?'مثال: 4.20':'مثال: 5';input.step=mode==='price'?'0.01':'1';const suffix=$('alertDropSuffix');if(suffix)suffix.textContent=mode==='price'?'$':'%';}
 function openAlertModal(f){
