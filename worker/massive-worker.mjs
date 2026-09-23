@@ -40,25 +40,22 @@ function choosePrice(x,session,now){
   const official=session==='regular'?(prev>0?prev:null):(day>0?day:(prev>0?prev:null));
   const last=finite(x?.lastTrade?.p),lastSess=tradeSession(x?.lastTrade?.t,now),minute=finite(x?.min?.c),minuteSess=tradeSession(x?.min?.t,now),pre=finite(x?.preMarket?.p),after=finite(x?.afterHours?.p);
   const regular=official>0?official:(day>0?day:prev>0?prev:null);let price=null,source=null;
+  // Session-specific live price: never substitute a different session's price.
+  // In pre/after hours, use the newest trade/minute print from that same session,
+  // then Massive's current extended-hours field for that session.
   if(session==='regular'){
-    if(last>0&&(lastSess==='regular'||!lastSess)){price=last;source='regular';}
+    if(last>0&&lastSess==='regular'){price=last;source='regular';}
     else if(regular>0){price=regular;source='regularClose';}
-    else if(after>0){price=after;source='afterHours';}
-    else if(pre>0){price=pre;source='preMarket';}
   }else if(session==='after'){
-    if(after>0){price=after;source='afterHours';}
-    else if(last>0&&lastSess==='after'){price=last;source='afterHours';}
+    if(last>0&&lastSess==='after'){price=last;source='afterHours';}
     else if(minute>0&&minuteSess==='after'){price=minute;source='afterHours';}
-    else if(pre>0){price=pre;source='preMarket';}
-    else if(regular>0){price=regular;source='regularClose';}
-  }else if(session==='pre'){
-    if(pre>0){price=pre;source='preMarket';}
-    else if(last>0&&lastSess==='pre'){price=last;source='preMarket';}
-    else if(minute>0&&minuteSess==='pre'){price=minute;source='preMarket';}
     else if(after>0){price=after;source='afterHours';}
-    else if(regular>0){price=regular;source='regularClose';}
+  }else if(session==='pre'){
+    if(last>0&&lastSess==='pre'){price=last;source='preMarket';}
+    else if(minute>0&&minuteSess==='pre'){price=minute;source='preMarket';}
+    else if(pre>0){price=pre;source='preMarket';}
   }else{
-    if(after>0){price=after;source='afterHours';}else if(pre>0){price=pre;source='preMarket';}else if(regular>0){price=regular;source='regularClose';}
+    if(regular>0){price=regular;source='regularClose';}
   }
   if(!(price>0))return null;
   const ch=finite(x?.todaysChangePerc);

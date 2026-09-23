@@ -67,8 +67,10 @@ function marketSession(){
   if(mins>=960&&mins<1200)return 'after';
   return 'closed';
 }
+function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
+function tradeSession(ts,now=new Date()){const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);if(Number.isNaN(d.getTime()))return null;const a=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d),b=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);const g=o=>Object.fromEntries(o.map(x=>[x.type,x.value]));const A=g(a),B=g(b);if(A.year!==B.year||A.month!==B.month||A.day!==B.day)return null;const mins=Number(A.hour)*60+Number(A.minute);if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;}
 async function snapshotTicker(symbol){
-  const d=await massive(`/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}`);
+  const d=await massive(`/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}?extended=true`);
   return d?.ticker||d?.results?.[0]||d;
 }
 export async function snapshot(tickers=[]){
@@ -77,11 +79,15 @@ export async function snapshot(tickers=[]){
   const session=marketSession();
   for(const x of d.tickers||[]){
     if(!x.ticker)continue;
-    const liveRegular=Number(x.lastTrade?.p);
-    const officialClose=session==='regular' ? Number(x.prevDay?.c) : Number(x.day?.c??x.prevDay?.c);
-    const regular=session==='regular' && Number.isFinite(liveRegular)&&liveRegular>0 ? liveRegular : officialClose;
-    const pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p);
-    if(Number.isFinite(regular)&&regular>0)m.set(String(x.ticker).toUpperCase(),{price:regular,regularPrice:Number.isFinite(officialClose)&&officialClose>0?officialClose:regular,preMarket:Number.isFinite(pre)&&pre>0?pre:null,afterHours:Number.isFinite(after)&&after>0?after:null,priceSession:session,priceSource:session==='regular'&&regular===liveRegular?'regular':'regularClose'});
+    const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
+    const valid=v=>Number.isFinite(v)&&v>0?v:null;
+    const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
+    const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
+    let price=null, source=null;
+    if(session==='regular'){ if(lastSession==='regular'&&valid(last)) {price=last;source='regular';} else if(officialClose) {price=officialClose;source='regularClose';} }
+    else if(session==='pre'){ if(lastSession==='pre'&&valid(last)){price=last;source='preMarket';} else if(minuteSession==='pre'&&valid(minute)){price=minute;source='preMarket';} else if(valid(pre)){price=pre;source='preMarket';} }
+    else if(session==='after'){ if(lastSession==='after'&&valid(last)){price=last;source='afterHours';} else if(minuteSession==='after'&&valid(minute)){price=minute;source='afterHours';} else if(valid(after)){price=after;source='afterHours';} }
+    if(price!=null)m.set(String(x.ticker).toUpperCase(),{price,regularPrice:valid(day)||valid(prev)||price,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source});
   }
   // During extended hours, verify the exact per-symbol Massive/Polygon snapshot
   // endpoint so preMarket/afterHours is used instead of yesterday's close.

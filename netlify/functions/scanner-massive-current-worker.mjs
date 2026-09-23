@@ -65,32 +65,20 @@ function choosePrice(x,session,now){
   const pre=valid(prePrice);
   const regular=valid(regularPrice)||valid(dayClose)||valid(prevClose);
   let price=null,source=null;
-  // User-facing rule: always prefer the most recent extended-hours quote in
-  // this order: after-hours -> pre-market -> regular/close. During regular
-  // trading, a current regular trade is preferred over stale extended quotes.
+  // Session-specific live price only. Never fall back to another session.
   if(session==='regular'){
     if(lastTradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
-    else if(after!=null&&lastTradeSess==='after'){price=after;source='afterHours';}
-    else if(pre!=null&&lastTradeSess==='pre'){price=pre;source='preMarket';}
-    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='pre'){price=minutePrice;source='preMarket';}
-    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
-    else if(after!=null){price=after;source='afterHours';}
-    else if(pre!=null){price=pre;source='preMarket';}
-  }else if(session==='after'){
-    if(after!=null){price=after;source='afterHours';}
-    else if(lastTradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
-    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='after'){price=minutePrice;source='afterHours';}
-    else if(pre!=null){price=pre;source='preMarket';}
-    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
-  }else if(session==='pre'){
-    if(pre!=null){price=pre;source='preMarket';}
-    else if(lastTradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
-    else if(after!=null){price=after;source='afterHours';}
-    else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
-  }else{
-    if(after!=null){price=after;source='afterHours';}
-    else if(pre!=null){price=pre;source='preMarket';}
     else if(regular!=null){price=regular;source='regularClose';}
+  }else if(session==='after'){
+    if(lastTradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
+    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='after'){price=minutePrice;source='afterHours';}
+    else if(after!=null){price=after;source='afterHours';}
+  }else if(session==='pre'){
+    if(lastTradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
+    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='pre'){price=minutePrice;source='preMarket';}
+    else if(pre!=null){price=pre;source='preMarket';}
+  }else if(regular!=null){
+    price=regular;source='regularClose';
   }
   if(!Number.isFinite(price)||price<=0)return null;
   const changeRaw=Number(x?.todaysChangePerc);

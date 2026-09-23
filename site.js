@@ -255,14 +255,16 @@ function chooseBrowserLivePrice(x,session){
   const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c),prev=Number(x?.prevDay?.c),min=Number(x?.min?.c);
   const valid=v=>Number.isFinite(v)&&v>0?v:null;
   const lastValid=valid(last),preValid=valid(pre),afterValid=valid(after),dayValid=valid(day),prevValid=valid(prev),minValid=valid(min);
-  if(session==='pre') return preValid ?? lastValid ?? dayValid ?? prevValid ?? minValid;
-  if(session==='regular') return lastValid ?? dayValid ?? prevValid ?? minValid;
-  if(session==='after') return afterValid ?? lastValid ?? preValid ?? dayValid ?? prevValid ?? minValid;
-  return afterValid ?? preValid ?? dayValid ?? prevValid ?? minValid;
+  const sessionOfTs=ts=>{const n=Number(ts);if(!Number.isFinite(n)||n<=0)return null;const d=new Date(n>1e14?n/1e3:n>1e11?n:n*1000);const q=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);const h=Number(q.find(x=>x.type==='hour')?.value||0),m=Number(q.find(x=>x.type==='minute')?.value||0),mins=h*60+m;if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;};
+  const lastSession=sessionOfTs(x?.lastTrade?.t),minSession=sessionOfTs(x?.min?.t);
+  if(session==='pre') return (lastSession==='pre'&&lastValid) || (minSession==='pre'&&minValid) || preValid || null;
+  if(session==='regular') return (lastSession==='regular'&&lastValid) || dayValid || prevValid || null;
+  if(session==='after') return (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
+  return null;
 }
 async function getMarketSnapshot(signal){
   if(marketSnapshot) return marketSnapshot;
-  const d=await getJSON(massive("/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false"),3,signal);
+  const d=await getJSON(massive("/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true"),3,signal);
   const map=new Map(),session=browserMarketSession();
   for(const x of (d.tickers||[])){
     const price=chooseBrowserLivePrice(x,session);
