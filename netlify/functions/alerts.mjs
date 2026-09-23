@@ -108,8 +108,9 @@ export async function evaluateUserAlerts(email,records){
       if(hit&&!was){
         const title=`تنبيه ${ticker}`; const message=`${ticker}: ${detail}`;
         const users=await getUsers(); const user=users[String(email).toLowerCase()];
-        let delivered=true;
-        if(user?.telegramChatId){
+        const telegramLinked=Boolean(user?.telegramChatId);
+        let delivered=!telegramLinked;
+        if(telegramLinked){
           try{
             const result=await sendTelegram(user.telegramChatId,`🔔 ${title}\n${message}`);
             delivered=Boolean(result?.sent);
@@ -118,10 +119,10 @@ export async function evaluateUserAlerts(email,records){
             console.warn('Telegram send failed; alert will retry on next sweep',ticker,type,e.message);
           }
         }
-        fired.push({ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:delivered});
-        // Only consume the trigger edge after Telegram accepted the message.
-        // A transient Telegram/API failure must never permanently lose the alert.
+        // Only record/consume the trigger after delivery is confirmed.
+        // If Telegram is linked but temporarily fails, nothing is consumed and the next sweep retries it.
         if(delivered){
+          fired.push({ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:telegramLinked});
           nextState[sk]={hit:true,updatedAt:new Date().toISOString()};
           changed=true;
         }

@@ -39,7 +39,7 @@ async function apiFetch(url,opt={}){
   opt.headers=Object.assign({"X-Device-ID":deviceId(),"X-Device-Fingerprint":fp},opt.headers||{});
   const fullUrl=new URL(url,window.location.origin).toString();
   opt.credentials="same-origin";
-  if(url.includes("/.netlify/functions/auth") || url.includes("/.netlify/functions/requests")) opt.cache="no-store";
+  if(url.includes("/.netlify/functions/")) opt.cache="no-store";
   return fetch(fullUrl,opt);
 }
 async function responseJSON(r){
@@ -78,6 +78,65 @@ async function saveAlertSettings(){
   finally{if(btn)btn.disabled=false;}
 }
 async function disableAlert(){try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:alertTickerCurrent})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر إلغاء التنبيه.');alertSettings=d.settings||{};$('alertModal').classList.remove('show');renderFavorites();}catch(e){$('alertMsg').textContent=e.message||'تعذر إلغاء التنبيه.';}}
+function alertCriteriaText(a){
+  const out=[];
+  if(a?.drop?.enabled){
+    out.push(a.drop.mode==='price'
+      ? `السعر ≤ $${Number(a.drop.value).toFixed(2)}`
+      : `هبوط ${Number(a.drop.value).toFixed(2)}% أو أكثر`);
+  }
+  if(a?.short?.enabled) out.push(`الشورت ≤ ${Number(a.short.value).toLocaleString('en-US')}`);
+  if(a?.rsi?.enabled) out.push(`RSI ${a.rsi.direction==='above'?'≥':'≤'} ${Number(a.rsi.value).toFixed(1)}`);
+  return out;
+}
+function renderActiveNotifications(settings){
+  const list=$('activeNotificationList');
+  const count=$('activeNotificationCount');
+  if(!list)return;
+  const items=Object.values(settings||{}).filter(a=>a?.enabled);
+  if(count)count.textContent=items.length.toLocaleString('ar-SA');
+  list.innerHTML=items.length?items.map(a=>{
+    const criteria=alertCriteriaText(a);
+    return `<div class="notificationItem activeNotificationItem"><div class="notificationItemMain"><b>${escapeHtml(a.ticker||'—')}</b><div class="small">${criteria.length?criteria.map(escapeHtml).join(' · '):'التنبيه مفعّل'}</div></div><span class="notificationActiveBadge">مفعّل</span></div>`;
+  }).join(''):'<div class="small">لا توجد تنبيهات مفعلة حاليًا.</div>';
+}
+function renderNotificationHistory(items){
+  const list=$('notificationList');
+  const count=$('triggeredNotificationCount');
+  if(!list)return;
+  if(count)count.textContent=(items||[]).length.toLocaleString('ar-SA');
+  list.innerHTML=(items||[]).length?items.map(x=>`<div class="notificationItem"><div class="notificationItemMain"><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small notificationTime">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لم يتم إطلاق أي تنبيه حتى الآن.</div>';
+}
+async function loadNotificationHistory(){
+  try{
+    const d=await getJSON('/.netlify/functions/alerts?action=history');
+    const items=d.items||[];
+    $('notificationBadge')?.classList.toggle('hidden',!items.length);
+    if($('notificationBadge'))$('notificationBadge').textContent=Math.min(items.length,99);
+    renderNotificationHistory(items);
+    return items;
+  }catch(e){
+    console.warn('alert history',e.message);
+    const list=$('notificationList');
+    if(list)list.innerHTML='<div class="small">تعذر تحميل سجل التنبيهات الآن.</div>';
+    return [];
+  }
+}
+async function loadActiveNotifications(){
+  try{
+    const d=await getJSON('/.netlify/functions/alerts?action=settings');
+    alertSettings=d.settings||{};
+    telegramState=d.telegram||telegramState;
+    renderTelegramLinkState();
+    renderActiveNotifications(alertSettings);
+    return alertSettings;
+  }catch(e){
+    console.warn('active alerts',e.message);
+    const list=$('activeNotificationList');
+    if(list)list.innerHTML='<div class="small">تعذر تحميل التنبيهات المفعلة الآن.</div>';
+    return {};
+  }
+}
 async function openNotificationBell(){
   const panel=$('notificationPanel');
   const setup=$('telegramFirstSetup');
@@ -97,12 +156,11 @@ async function openNotificationBell(){
         if(link){link.href=telegramState.link||'#';link.style.display=telegramState.link?'inline-flex':'none';}
       }
     }
-    await loadNotificationHistory();
+    await Promise.all([loadActiveNotifications(),loadNotificationHistory()]);
   }catch(e){
-    if(list)list.innerHTML=`<div class="small">تعذر تجهيز ربط التنبيهات الآن. حاول مرة أخرى.</div>`;
+    if(list)list.innerHTML='<div class="small">تعذر تجهيز التنبيهات الآن. حاول مرة أخرى.</div>';
   }
 }
-async function loadNotificationHistory(){try{const d=await getJSON('/.netlify/functions/alerts?action=history');const list=$('notificationList');if(!list)return;const items=d.items||[];$('notificationBadge')?.classList.toggle('hidden',!items.length);if($('notificationBadge'))$('notificationBadge').textContent=Math.min(items.length,99);list.innerHTML=items.length?items.map(x=>`<div class="testRow"><div><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لا توجد تنبيهات.</div>';}catch(e){console.warn('alert history',e.message)}}
 
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -172,16 +230,30 @@ setInterval(refreshScannerCacheInBackground,120000);
 
 // Stocks Starter: one full-market snapshot per scan for current prices.
 let marketSnapshot=null;
+function browserMarketSession(){
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
+  const h=Number(parts.find(x=>x.type==='hour')?.value||0),m=Number(parts.find(x=>x.type==='minute')?.value||0),mins=h*60+m;
+  if(mins>=240&&mins<570)return 'pre';
+  if(mins>=570&&mins<960)return 'regular';
+  if(mins>=960&&mins<1200)return 'after';
+  return 'closed';
+}
+function chooseBrowserLivePrice(x,session){
+  const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c),prev=Number(x?.prevDay?.c),min=Number(x?.min?.c);
+  const valid=v=>Number.isFinite(v)&&v>0?v:null;
+  const lastValid=valid(last),preValid=valid(pre),afterValid=valid(after),dayValid=valid(day),prevValid=valid(prev),minValid=valid(min);
+  if(session==='pre') return preValid ?? lastValid ?? dayValid ?? prevValid ?? minValid;
+  if(session==='regular') return lastValid ?? dayValid ?? prevValid ?? minValid;
+  if(session==='after') return afterValid ?? lastValid ?? preValid ?? dayValid ?? prevValid ?? minValid;
+  return afterValid ?? preValid ?? dayValid ?? prevValid ?? minValid;
+}
 async function getMarketSnapshot(signal){
   if(marketSnapshot) return marketSnapshot;
   const d=await getJSON(massive("/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false"),3,signal);
-  const map=new Map();
+  const map=new Map(),session=browserMarketSession();
   for(const x of (d.tickers||[])){
-    const p=Number(x.lastTrade?.p);
-    const day=Number(x.day?.c);
-    const min=Number(x.min?.c);
-    const price=Number.isFinite(p)&&p>0?p:(Number.isFinite(day)&&day>0?day:(Number.isFinite(min)&&min>0?min:null));
-    if(x.ticker && Number.isFinite(price)&&price>0) map.set(String(x.ticker).toUpperCase(),{price,raw:x});
+    const price=chooseBrowserLivePrice(x,session);
+    if(x.ticker && Number.isFinite(price)&&price>0) map.set(String(x.ticker).toUpperCase(),{price,raw:x,session});
   }
   marketSnapshot=map;
   return map;
@@ -335,7 +407,7 @@ function updateVisibleCurrentPrices(){
 function startCurrentPriceRefresh(){
   clearInterval(currentPriceTimer);
   loadCurrentPrices();
-  currentPriceTimer=setInterval(()=>{if(document.visibilityState==='visible'&&sessionReady)loadCurrentPrices();},30000);
+  currentPriceTimer=setInterval(()=>{if(document.visibilityState==='visible'&&sessionReady)loadCurrentPrices();},15000);
 }
 function formatCompactShares(value){
   const n=Number(value); if(!Number.isFinite(n)||n<=0)return '—';
