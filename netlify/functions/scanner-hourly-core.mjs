@@ -72,7 +72,7 @@ async function snapshotTicker(symbol){
   return d?.ticker||d?.results?.[0]||d;
 }
 export async function snapshot(tickers=[]){
-  const d=await massive('/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false');
+  const d=await massive('/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true');
   const m=new Map();
   const session=marketSession();
   for(const x of d.tickers||[]){
@@ -102,7 +102,9 @@ async function buildTicker(t,events,refs,snap,borrow){
   }
   const tech=bars.filter(b=>['o','h','l','c'].every(k=>Number.isFinite(Number(b[k]))));
   const closes=tech.map(b=>Number(b.c));
-  const ind={rsi:rsi(closes),ma5:ma(closes,5),ma20:ma(closes,20),ema20:ema(closes,20),ema50:ema(closes,50),cci:cci(tech)};
+  const calculated={rsi:rsi(closes),ma5:ma(closes,5),ma20:ma(closes,20),ema20:ema(closes,20),ema50:ema(closes,50),cci:cci(tech)};
+  const massiveInd=snap.get(t)?.indicators||{};
+  const ind={rsi:Number.isFinite(Number(massiveInd.rsi))?Number(massiveInd.rsi):calculated.rsi,ma5:Number.isFinite(Number(massiveInd.sma5))?Number(massiveInd.sma5):calculated.ma5,ma20:Number.isFinite(Number(massiveInd.sma20))?Number(massiveInd.sma20):calculated.ma20,ema20:Number.isFinite(Number(massiveInd.ema20))?Number(massiveInd.ema20):calculated.ema20,ema50:Number.isFinite(Number(massiveInd.ema50))?Number(massiveInd.ema50):calculated.ema50,cci:calculated.cci,technicalSource:massiveInd.source||'massive-aggregates-fallback',technicalUpdatedAt:massiveInd.updatedAt||null};
   const change=dailyChange(tech), snapRow=snap.get(t);
   const snapPrice=Number(snapRow?.price);
   const latestClose=Number(tech.at(-1)?.c);
@@ -121,7 +123,7 @@ async function buildTicker(t,events,refs,snap,borrow){
     const post=tech.slice(-252);
     const range={high52:post.length?Math.max(...post.map(b=>Number(b.h)).filter(Number.isFinite)):null,low52:post.length?Math.min(...post.map(b=>Number(b.l)).filter(Number.isFinite)):null};
     const low=lowSince(tech,e.execution_date), h=fourHInfo(intraday,e.execution_date,tech);
-    rows.push({ticker:t,splitDate:e.execution_date,splitOpen,current,currentPrice,preMarketPrice,afterHoursPrice,closePrice,rsi:ind.rsi,ma5:ind.ma5,ma20:ind.ma20,ema20:ind.ema20,ema50:ind.ema50,cci:ind.cci,low:low.low,lowDate:low.lowDate,sinceLow:low.sinceLow,high52:range.high52,low52:range.low52,low4h:h.low4h,low4hDate:h.low4hDate,low4hDays:h.low4hDays,split4hHigh:h.split4hHigh,shortShares:shares,borrowFee:fee,freeFloat:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,free_float:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,shortDataState:shortState,shortDataSource:borrow?.source||null,shortDataUpdatedAt:borrow?.updatedAt||null,freeFloatSource:borrow?.freeFloat!=null?(borrow?.freeFloatSource||'finviz-scrapingant'):null,freeFloatUpdatedAt:borrow?.freeFloat!=null?(borrow?.freeFloatUpdatedAt||null):null,changePct:change,exchange:refs[t]?.exchange_name||refs[t]?.primary_exchange||null,primaryExchange:refs[t]?.primary_exchange||null,flag:flag(refs[t]),updatedAt:new Date().toISOString()});
+    rows.push({ticker:t,splitDate:e.execution_date,splitOpen,current,currentPrice,preMarketPrice,afterHoursPrice,closePrice,rsi:ind.rsi,ma5:ind.ma5,ma20:ind.ma20,ema20:ind.ema20,ema50:ind.ema50,cci:ind.cci,technicalSource:ind.technicalSource,technicalUpdatedAt:ind.technicalUpdatedAt,low:low.low,lowDate:low.lowDate,sinceLow:low.sinceLow,high52:range.high52,low52:range.low52,low4h:h.low4h,low4hDate:h.low4hDate,low4hDays:h.low4hDays,split4hHigh:h.split4hHigh,shortShares:shares,borrowFee:fee,freeFloat:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,free_float:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,shortDataState:shortState,shortDataSource:borrow?.source||null,shortDataUpdatedAt:borrow?.updatedAt||null,freeFloatSource:borrow?.freeFloat!=null?(borrow?.freeFloatSource||'finviz-scrapingant'):null,freeFloatUpdatedAt:borrow?.freeFloat!=null?(borrow?.freeFloatUpdatedAt||null):null,changePct:change,exchange:refs[t]?.exchange_name||refs[t]?.primary_exchange||null,primaryExchange:refs[t]?.primary_exchange||null,flag:flag(refs[t]),updatedAt:new Date().toISOString()});
   }
   return rows;
 }
@@ -227,7 +229,7 @@ export async function runHourlyBuild({manual=false,force=true,snapOverride=null,
     const publishedAt=new Date().toISOString();
     const versionKey=`scanner-cache-data-v2:${jobId}`;
     const ipoCache=await readIpoCache();
-    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'five-minute-full-direct',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-via-scrapingant-hourly-snapshot',universe:'massive-fresh',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
+    const payload={version:8,ready:true,building:false,updatedAt:publishedAt,technicalUpdatedAt:publishedAt,massiveUpdatedAt:publishedAt,fullRefreshAt:publishedAt,splitsUpdatedAt:universe.updatedAt||null,windowDays:100,records:finalRows,expectedRows:entries.length,missingRows:missingKeys.length,missing:missingKeys.slice(0,100),failedTickers:failed.slice(0,50).map(x=>({ticker:x.ticker,error:x.error})),dataRefreshMode:'five-minute-massive-snapshot-plus-indicators',sources:{daily:'massive-fresh',intraday4h:'massive-fresh',current:'massive-fresh',borrow:'chartexchange-via-scrapingant-hourly-snapshot',universe:'daily-stock-split-cache',ipos:'separate-daily-massive-cache'},ipos:ipoCache?.records||[],ipoUpdatedAt:ipoCache?.updatedAt||null,centralFile:true};
     if(deferPublish){
       const prepared={...payload,preparedAt:publishedAt,publicationPending:true};
       await store.setJSON('scanner-technical-pending-v1',prepared);

@@ -37,7 +37,7 @@ async function getSnapshot(tickers){
   const key=KEY(); if(!key) throw new Error("MASSIVE_API_KEY is not configured.");
   const list=[...new Set(tickers.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))];
   if(!list.length)return {tickers:[]};
-  const path=`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&tickers=${encodeURIComponent(list.join(','))}`;
+  const path=`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true&tickers=${encodeURIComponent(list.join(','))}`;
   let last='';
   for(let i=0;i<4;i++){
     const r=await fetch(`${BASE}${path}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:"application/json"}});
@@ -57,6 +57,8 @@ function choosePrice(x,session,now){
   const lastTradeSess=tradeSession(x?.lastTrade?.t,now);
   const afterPrice=Number(x?.afterHours?.p);
   const prePrice=Number(x?.preMarket?.p);
+  const minutePrice=Number(x?.min?.c);
+  const minuteSess=tradeSession(x?.min?.t,now);
   const regularPrice=officialClose;
   const valid=v=>Number.isFinite(v)&&v>0?v:null;
   const after=valid(afterPrice);
@@ -70,12 +72,14 @@ function choosePrice(x,session,now){
     if(lastTradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
     else if(after!=null&&lastTradeSess==='after'){price=after;source='afterHours';}
     else if(pre!=null&&lastTradeSess==='pre'){price=pre;source='preMarket';}
+    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='pre'){price=minutePrice;source='preMarket';}
     else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
     else if(after!=null){price=after;source='afterHours';}
     else if(pre!=null){price=pre;source='preMarket';}
   }else if(session==='after'){
     if(after!=null){price=after;source='afterHours';}
     else if(lastTradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
+    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='after'){price=minutePrice;source='afterHours';}
     else if(pre!=null){price=pre;source='preMarket';}
     else if(regular!=null){price=regular;source=lastTradeSess||'regularClose';}
   }else if(session==='pre'){

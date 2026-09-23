@@ -140,26 +140,28 @@ async function loadActiveNotifications(){
 async function openNotificationBell(){
   const panel=$('notificationPanel');
   const setup=$('telegramFirstSetup');
+  const active=$('activeNotificationList');
   const list=$('notificationList');
   if(!panel)return;
   panel.classList.add('show');
+  if(active)active.innerHTML='<div class="small">جاري تحميل التنبيهات المفعلة...</div>';
+  if(list)list.innerHTML='<div class="small">جاري تحميل سجل التنبيهات...</div>';
   try{
-    const d=await getJSON('/.netlify/functions/alerts?action=telegram-link');
+    const d=await getJSON('/.netlify/functions/alerts?action=telegram-link',1);
     telegramState=d.telegram||{linked:false,link:null};
     renderTelegramLinkState();
     if(setup){
-      if(telegramState.linked){
-        setup.style.display='none';
-      }else{
-        setup.style.display='block';
-        const link=$('telegramFirstSetupLink');
-        if(link){link.href=telegramState.link||'#';link.style.display=telegramState.link?'inline-flex':'none';}
-      }
+      if(telegramState.linked){setup.style.display='none';}
+      else{setup.style.display='block';const link=$('telegramFirstSetupLink');if(link){link.href=telegramState.link||'#';link.style.display=telegramState.link?'inline-flex':'none';}}
     }
-    await Promise.all([loadActiveNotifications(),loadNotificationHistory()]);
   }catch(e){
-    if(list)list.innerHTML='<div class="small">تعذر تجهيز التنبيهات الآن. حاول مرة أخرى.</div>';
+    console.warn('telegram link',e.message);
+    if(setup)setup.style.display='none';
   }
+  await Promise.allSettled([loadActiveNotifications(),loadNotificationHistory()]);
+  // Never leave the panel in a perpetual loading state.
+  if(active && /جاري تحميل/.test(active.textContent||''))active.innerHTML='<div class="small">تعذر تحميل التنبيهات المفعلة الآن. حاول مرة أخرى.</div>';
+  if(list && /جاري تحميل/.test(list.textContent||''))list.innerHTML='<div class="small">تعذر تحميل سجل التنبيهات الآن. حاول مرة أخرى.</div>';
 }
 
 const $=id=>document.getElementById(id);
@@ -169,11 +171,22 @@ const fmt=(n,d=2)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
 function setStatus(x,c=""){ $("status").className="status "+c; $("status").innerHTML=x; }
 async function getJSON(url,retries=3,signal){
   for(let attempt=0;attempt<=retries;attempt++){
-    const r=await apiFetch(url,{signal}); const t=await r.text(); let d={}; try{d=t?JSON.parse(t):{}}catch{throw Error("الخادم أعاد استجابة غير JSON (HTTP "+r.status+"). "+t.slice(0,180))}
-    if(r.ok&&!d.error)return d;
-    if((r.status===429||r.status>=500)&&attempt<retries){await sleep(Math.min(15000,1500*Math.pow(2,attempt)));continue}
-    if(r.status===401)throw Error(d.error||"انتهت الجلسة أو الحماية الخارجية للموقع. أعد تحميل الصفحة ثم سجّل الدخول من جديد.");
-    throw Error("HTTP "+r.status+" "+(d.error||d.message||"API error"));
+    const controller=new AbortController();
+    const onAbort=()=>controller.abort();
+    if(signal?.aborted)throw Error('تم إلغاء الطلب.');
+    signal?.addEventListener('abort',onAbort,{once:true});
+    const timer=setTimeout(()=>controller.abort(),12000);
+    try{
+      const r=await apiFetch(url,{signal:controller.signal}); const t=await r.text(); let d={}; try{d=t?JSON.parse(t):{}}catch{throw Error("الخادم أعاد استجابة غير JSON (HTTP "+r.status+"). "+t.slice(0,180))}
+      if(r.ok&&!d.error)return d;
+      if((r.status===429||r.status>=500)&&attempt<retries){await sleep(Math.min(8000,1000*Math.pow(2,attempt)));continue}
+      if(r.status===401)throw Error(d.error||"انتهت الجلسة أو الحماية الخارجية للموقع. أعد تحميل الصفحة ثم سجّل الدخول من جديد.");
+      throw Error("HTTP "+r.status+" "+(d.error||d.message||"API error"));
+    }catch(e){
+      if(e?.name==='AbortError' && attempt<retries){if(attempt<retries)continue;}
+      if(attempt<retries && (e?.name==='AbortError'||/timeout|المهلة/i.test(String(e?.message||''))))continue;
+      throw e;
+    }finally{clearTimeout(timer);signal?.removeEventListener('abort',onAbort);}
   }
 }
 function massive(path){return "/.netlify/functions/massive?path="+encodeURIComponent(path)}
@@ -665,7 +678,7 @@ async function loadMe(){
       $("infoEnd").textContent=d.user.expiresAt||"—";
       $("infoRemaining").textContent=rem!=null?rem+" يوم":"—";$("renewalBox").classList.toggle("hidden",!(rem!=null&&rem<=7));if(rem!=null&&rem<=7)updateRenewAmount();
       applyTheme(localStorage.getItem("scanner_theme")==="dark"?"dark":"light");
-      if(d.user.admin){await addAdminPanel();}else{$("adminNav").classList.add("hidden");if($("sec-admin").classList.contains("active")){document.querySelector('[data-sec="scanner"]').click();}}
+      if(d.user.admin){const tb=$("telegramTestBtn");if(tb){tb.style.display="inline-flex";tb.removeAttribute("aria-hidden");}await addAdminPanel();}else{$("adminNav").classList.add("hidden");if($("sec-admin").classList.contains("active")){document.querySelector('[data-sec="scanner"]').click();}}
       return true;
     }catch(e){
       lastError=e;

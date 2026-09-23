@@ -21,3 +21,9 @@
 - `GITHUB_FLOAT_WORKER_WORKFLOW` (optional; defaults to `.github/workflows/daily-float-worker.yml`)
 
 Do not commit real API keys to the repository or browser bundle.
+
+
+## Massive five-minute lane
+- `.github/workflows/massive-update.yml` runs every 5 minutes.
+- Each run publishes the completed snapshot from the previous cycle first, then fetches a fresh Massive full-market snapshot with `extended=true` and server-side RSI/SMA/EMA values for the next cycle.
+- The rolling 100-day Stock Split universe is read-only during this lane and is refreshed only by the independent daily split worker.

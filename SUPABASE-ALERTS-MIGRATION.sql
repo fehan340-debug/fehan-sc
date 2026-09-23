@@ -40,3 +40,14 @@ revoke all on table public.stock_alerts from anon;
 revoke all on table public.stock_alerts from authenticated;
 grant all on table public.user_alerts to service_role;
 grant all on table public.stock_alerts to service_role;
+
+
+-- Harden the alert tables for the server-side custom-auth architecture.
+-- The site does NOT use Supabase Auth; Netlify/GitHub access these tables with
+-- the service-role key. These policies keep anon/authenticated clients out.
+alter table public.user_alerts enable row level security;
+alter table public.stock_alerts enable row level security;
+drop policy if exists user_alerts_service_role on public.user_alerts;
+drop policy if exists stock_alerts_service_role on public.stock_alerts;
+create policy user_alerts_service_role on public.user_alerts for all to service_role using (true) with check (true);
+create policy stock_alerts_service_role on public.stock_alerts for all to service_role using (true) with check (true);

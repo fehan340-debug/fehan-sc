@@ -4,10 +4,20 @@ function env(name){return String(process.env[name]||'').trim();}
 async function sendTelegram(chatId,text){
   const token=env('TELEGRAM_BOT_TOKEN');
   if(!token)throw new Error('TELEGRAM_BOT_TOKEN غير مهيأ.');
-  const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chatId,text,disable_web_page_preview:true})});
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok||d?.ok!==true)throw new Error(d?.description||`Telegram HTTP ${r.status}`);
-  return d;
+  let last='Telegram send failed';
+  for(let attempt=0;attempt<3;attempt++){
+    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),10000);
+    try{
+      const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chatId,text,disable_web_page_preview:true}),signal:controller.signal});
+      const d=await r.json().catch(()=>({}));
+      if(r.ok&&d?.ok===true)return d;
+      last=d?.description||`Telegram HTTP ${r.status}`;
+      if(![429,500,502,503,504].includes(r.status))break;
+    }catch(e){last=e?.name==='AbortError'?'Telegram request timed out':String(e?.message||e);}
+    finally{clearTimeout(timer);}
+    if(attempt<2)await new Promise(r=>setTimeout(r,500*(attempt+1)));
+  }
+  throw new Error(last);
 }
 
 export default async function(request){

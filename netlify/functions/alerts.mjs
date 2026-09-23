@@ -28,7 +28,7 @@ async function createTelegramLink(email){
   const {username}=telegramConfig();
   if(!username)return null;
   const token=randomToken();
-  await getDataStore().setJSON(`telegram-link:${token}`,{email:String(email).toLowerCase(),createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+30*60*1000).toISOString()});
+  try{await storeSetJSON(`telegram-link:${token}`,{email:String(email).toLowerCase(),createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+30*60*1000).toISOString()});}catch(e){console.warn('[alerts] telegram link store failed',e.message);return null;}
   return `https://t.me/${encodeURIComponent(username)}?start=${encodeURIComponent(token)}`;
 }
 async function sendTelegram(chatId,text){
@@ -50,6 +50,20 @@ async function sendTelegram(chatId,text){
   }
   throw new Error(lastError);
 }
+function withTimeout(promise,ms=7000,label='الطلب'){
+  let timer;
+  const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label} تجاوز المهلة.`)),ms);});
+  return Promise.race([promise,timeout]).finally(()=>clearTimeout(timer));
+}
+async function storeGet(key,fallback=null){
+  try{return await withTimeout(getDataStore().get(key,{type:'json'}),7000,'قراءة بيانات التنبيهات');}catch(e){console.warn('[alerts] store get failed',key,e.message);return fallback;}
+}
+async function storeSetJSON(key,value){
+  return await withTimeout(getDataStore().setJSON(key,value),7000,'حفظ بيانات التنبيهات');
+}
+async function storeDelete(key){
+  try{await withTimeout(getDataStore().delete(key),7000,'حذف بيانات التنبيهات');return true;}catch(e){console.warn('[alerts] store delete failed',key,e.message);return false;}
+}
 function supabaseConfig(){
   return {
     url:String(process.env.SUPABASE_URL||'').trim().replace(/\/+$/,''),
@@ -58,14 +72,22 @@ function supabaseConfig(){
 }
 async function supabaseTable(path,options={}){
   const {url,key}=supabaseConfig();
-  if(!url||!key)return {available:false};
-  const r=await fetch(`${url}/rest/v1/${path}`,{...options,headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'return=representation',...(options.headers||{})}});
-  const text=await r.text(); let data=null; try{data=text?JSON.parse(text):null;}catch{}
-  if(!r.ok){
-    if(r.status===404||r.status===406||r.status===42703||r.status===42)return {available:false,status:r.status};
-    return {available:false,status:r.status,error:text.slice(0,500)};
+  if(!url||!key)return {available:false,reason:'not_configured'};
+  try{
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),7000);
+    try{
+      const r=await fetch(`${url}/rest/v1/${path}`,{...options,signal:controller.signal,headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'return=representation',...(options.headers||{})}});
+      const text=await r.text(); let data=null; try{data=text?JSON.parse(text):null;}catch{}
+      if(!r.ok){
+        if([401,403,404,406,42703].includes(r.status))return {available:false,status:r.status,error:text.slice(0,500)};
+        return {available:false,status:r.status,error:text.slice(0,500)};
+      }
+      return {available:true,data};
+    }finally{clearTimeout(timer);}
+  }catch(e){
+    return {available:false,status:0,error:e?.name==='AbortError'?'Supabase timeout':String(e?.message||e)};
   }
-  return {available:true,data};
 }
 function alertRowToObject(row){
   return {ticker:cleanTicker(row.ticker),splitDate:String(row.split_date||''),enabled:Boolean(row.enabled),drop:{enabled:Boolean(row.drop_enabled),mode:row.drop_mode==='price'?'price':'percent',value:row.drop_value==null?null:Number(row.drop_value)},short:{enabled:Boolean(row.short_enabled),value:row.short_value==null?null:Number(row.short_value)},rsi:{enabled:Boolean(row.rsi_enabled),value:row.rsi_value==null?null:Number(row.rsi_value),direction:row.rsi_direction==='above'?'above':'below'},updatedAt:row.updated_at||null};
@@ -74,51 +96,64 @@ function alertObjectToRow(email,a){
   return {user_email:String(email).toLowerCase(),ticker:a.ticker,split_date:a.splitDate||null,enabled:Boolean(a.enabled),drop_enabled:Boolean(a.drop?.enabled),drop_mode:a.drop?.mode==='price'?'price':'percent',drop_value:a.drop?.value==null?null:Number(a.drop.value),short_enabled:Boolean(a.short?.enabled),short_value:a.short?.value==null?null:Number(a.short.value),rsi_enabled:Boolean(a.rsi?.enabled),rsi_value:a.rsi?.value==null?null:Number(a.rsi.value),rsi_direction:a.rsi?.direction==='above'?'above':'below',updated_at:new Date().toISOString()};
 }
 async function readAlerts(email){
-  const mirror=await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{};
+  const mirror=await storeGet(keyFor(email,'settings'),{})||{};
+  // The mirror is the fast, user-owned source of truth. This prevents the UI
+  // from hanging when the optional Supabase alerts table is slow or blocked by RLS.
+  if(Object.keys(mirror).length)return mirror;
   const q=`user_alerts?select=*&user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&order=ticker.asc`;
   const r=await supabaseTable(q);
-  if(r.available){
-    const out={};
-    for(const row of Array.isArray(r.data)?r.data:[]){const a=alertRowToObject(row);out[a.ticker]=a;}
-    return Object.keys(out).length?out:mirror;
-  }
-  return mirror;
+  if(!r.available)return {};
+  const out={};
+  for(const row of Array.isArray(r.data)?r.data:[]){const a=alertRowToObject(row);out[a.ticker]=a;}
+  if(Object.keys(out).length){try{await storeSetJSON(keyFor(email,'settings'),out);}catch{}}
+  return out;
 }
+
 async function upsertAlert(email,a){
+  const all=await storeGet(keyFor(email,'settings'),{})||{};
+  all[a.ticker]=a;
+  // Persist the mirror FIRST so the customer gets the alert immediately even if
+  // the optional relational table is unavailable.
+  await storeSetJSON(keyFor(email,'settings'),all);
   const row=alertObjectToRow(email,a);
   const r=await supabaseTable('user_alerts',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify(row)});
-  const all=await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{};
-  all[a.ticker]=a;
-  await getDataStore().setJSON(keyFor(email,'settings'),all);
-  return Boolean(r.available);
+  if(!r.available)console.warn('[alerts] user_alerts mirror saved; Supabase table unavailable',r.status||'',r.error||'');
+  return true;
 }
+
 async function deleteAlert(email,ticker){
-  const r=await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
-  const all=await getDataStore().get(keyFor(email,'settings'),{type:'json'}).catch(()=>null)||{};
+  const all=await storeGet(keyFor(email,'settings'),{})||{};
   delete all[ticker];
-  await getDataStore().setJSON(keyFor(email,'settings'),all);
-  return Boolean(r.available);
+  await storeSetJSON(keyFor(email,'settings'),all);
+  const r=await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
+  if(!r.available)console.warn('[alerts] user_alerts delete mirrored; Supabase unavailable',r.status||'',r.error||'');
+  return true;
 }
+
 async function appendAlertHistory(email,event){
+  const history=await storeGet(keyFor(email,'history'),[])||[];
+  const next=[event,...history].slice(0,100);
+  await storeSetJSON(keyFor(email,'history'),next);
   const row={user_email:String(email).toLowerCase(),ticker:event.ticker,alert_type:event.type,title:event.title,message:event.message,created_at:event.createdAt||new Date().toISOString(),payload:event};
   const r=await supabaseTable('stock_alerts',{method:'POST',body:JSON.stringify(row)});
-  const history=await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[];
-  await getDataStore().setJSON(keyFor(email,'history'),[event,...history].slice(0,100));
-  return Boolean(r.available);
+  if(!r.available)console.warn('[alerts] stock_alerts mirrored; Supabase unavailable',r.status||'',r.error||'');
+  return true;
 }
+
 async function readAlertHistory(email){
-  const mirror=await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[];
+  const mirror=await storeGet(keyFor(email,'history'),[])||[];
+  if(Array.isArray(mirror)&&mirror.length)return mirror;
   const q=`stock_alerts?select=*&user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&order=created_at.desc&limit=100`;
   const r=await supabaseTable(q);
-  if(r.available){
-    const rows=(Array.isArray(r.data)?r.data:[]).map(x=>({ticker:x.ticker,type:x.alert_type,title:x.title,message:x.message,createdAt:x.created_at}));
-    return rows.length?rows:mirror;
-  }
-  return mirror;
+  if(!r.available)return [];
+  const rows=(Array.isArray(r.data)?r.data:[]).map(x=>({ticker:x.ticker,type:x.alert_type,title:x.title,message:x.message,createdAt:x.created_at}));
+  if(rows.length){try{await storeSetJSON(keyFor(email,'history'),rows);}catch{}}
+  return rows;
 }
+
 export async function evaluateUserAlerts(email,records){
-  const settings=await readAlerts(email); const state=await getDataStore().get(keyFor(email,'state'),{type:'json'}).catch(()=>null)||{};
-  const history=await getDataStore().get(keyFor(email,'history'),{type:'json'}).catch(()=>null)||[];
+  const settings=await readAlerts(email); const state=await storeGet(keyFor(email,'state'),{})||{};
+  const history=await storeGet(keyFor(email,'history'),[])||[];
   const nextState={...state}; let changed=false, fired=[];
   const byTicker=new Map((records||[]).map(x=>[cleanTicker(x?.ticker),x]));
   for(const [ticker,a] of Object.entries(settings)){
@@ -157,16 +192,20 @@ export async function evaluateUserAlerts(email,records){
       }
     }
   }
-  if(fired.length){let savedAny=false;for(const event of fired){const saved=await appendAlertHistory(email,event).catch(e=>{console.warn('alert history save failed',e.message);return false;});savedAny=savedAny||saved;}if(!savedAny)await getDataStore().setJSON(keyFor(email,'history'),[...fired,...history].slice(0,100));}
-  if(changed)await getDataStore().setJSON(keyFor(email,'state'),nextState);
+  if(fired.length){let savedAny=false;for(const event of fired){const saved=await appendAlertHistory(email,event).catch(e=>{console.warn('alert history save failed',e.message);return false;});savedAny=savedAny||saved;}if(!savedAny)await storeSetJSON(keyFor(email,'history'),[...fired,...history].slice(0,100)).catch(()=>{});}
+  if(changed)await storeSetJSON(keyFor(email,'state'),nextState).catch(()=>{});
   return {fired};
 }
 export async function runAlertSweep(){
   const users=await getUsers();
-  const cache=await readPublishedCache();
-  const current=await getDataStore().get('scanner-current-price-v1',{type:'json'}).catch(()=>null)||{};
+  const cache=await readPublishedCache().catch(()=>null);
+  const current=await storeGet('scanner-current-price-v1',{})||{};
+  const massive=await storeGet('scanner-massive-current-v1',{})||{};
   const liveMap=new Map((current.records||[]).map(x=>[cleanTicker(x?.ticker),x]));
-  const records=(Array.isArray(cache?.records)?cache.records:[]).map(x=>{const live=liveMap.get(cleanTicker(x?.ticker));return live?{...x,current:live.price,currentPrice:live.price,changePct:live.changePct,priceSource:live.priceSource,priceSession:live.priceSession}:x;}); if(!records.length)return {ok:true,users:0,fired:0};
+  const massiveMap=new Map((massive.records||[]).map(x=>[cleanTicker(x?.ticker),x]));
+  const baseRecords=Array.isArray(cache?.records)&&cache.records.length?cache.records:(Array.isArray(massive?.records)?massive.records:[]);
+  const records=baseRecords.map(x=>{const t=cleanTicker(x?.ticker);const live=liveMap.get(t)||massiveMap.get(t);const ind=massiveMap.get(t)?.indicators||{};return live?{...x,current:live.price,currentPrice:live.price,changePct:live.changePct,priceSource:live.priceSource,priceSession:live.priceSession,shortShares:x.shortShares, rsi:Number.isFinite(Number(x.rsi))?x.rsi:(Number.isFinite(Number(ind.rsi))?Number(ind.rsi):x.rsi)}:x;});
+  if(!records.length)return {ok:true,users:0,fired:0,reason:'no-market-data'};
   let fired=0, usersChecked=0;
   for(const email of Object.keys(users)){ const a=await readAlerts(email); if(!Object.keys(a).length)continue; usersChecked++; const r=await evaluateUserAlerts(email,records); fired+=r.fired.length; }
   return {ok:true,users:usersChecked,fired};
@@ -176,7 +215,7 @@ export async function createUserTelegramLink(email){
   const user=users[String(email||"").toLowerCase()];
   if(!user)return {linked:false,link:null};
   if(user.telegramChatId){
-    await getDataStore().setJSON(`telegram-subscriber:${String(email).toLowerCase()}`,{email:String(email).toLowerCase(),chatId:String(user.telegramChatId),linkedAt:user.telegramLinkedAt||null,admin:Boolean(user.admin)}).catch(()=>{});
+    await storeSetJSON(`telegram-subscriber:${String(email).toLowerCase()}`,{email:String(email).toLowerCase(),chatId:String(user.telegramChatId),linkedAt:user.telegramLinkedAt||null,admin:Boolean(user.admin)}).catch(()=>{});
     return {linked:true,chatId:String(user.telegramChatId),username:user.telegramUsername||null,link:null};
   }
   return {linked:false,link:await createTelegramLink(email)};
@@ -195,6 +234,7 @@ export default async function(request){
     if(action==='history'){return json({ok:true,items:await readAlertHistory(email)});}
     if(action==='telegram-link'){return json({ok:true,telegram:await createUserTelegramLink(email)});}
     if(action==='telegram-test'){
+      if(c.user.admin!==true)return json({ok:false,error:'هذا الاختبار متاح للمدير فقط.'},403);
       const users=await getUsers();
       const user=users[String(email).toLowerCase()];
       if(!user?.telegramChatId)return json({ok:false,error:'الحساب غير مربوط بتليجرام.'},400);
