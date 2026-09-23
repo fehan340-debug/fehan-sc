@@ -2,6 +2,8 @@ name: Massive Market Data Update
 
 on:
   schedule:
+    # Every five minutes. Each run first publishes the snapshot prepared by the previous run,
+    # then fetches fresh Massive prices + technical indicators for the next five-minute publication.
     - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
