@@ -31,9 +31,9 @@ function marketSession(date=new Date()){
 }
 function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
 function tradeSession(ts,now=new Date()){
-  const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);if(Number.isNaN(d.getTime()))return null;
-  const a=etParts(d),b=etParts(now);if(a.year!==b.year||a.month!==b.month||a.day!==b.day)return null;
-  const mins=Number(a.hour)*60+Number(a.minute);if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;
+  const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);
+  const a=etParts(d);
+  const mins=Number(a.hour)*60+Number(a.minute);if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960||mins<240)return 'after';
 }
 function choosePrice(x,session,now){
   const prev=finite(x?.prevDay?.c),day=finite(x?.day?.c);
@@ -50,11 +50,10 @@ function choosePrice(x,session,now){
     if(last>0&&lastSess==='after'){price=last;source='afterHours';}
     else if(minute>0&&minuteSess==='after'){price=minute;source='afterHours';}
     else if(after>0){price=after;source='afterHours';}
-  }else if(session==='pre'){
-    if(last>0&&lastSess==='pre'){price=last;source='preMarket';}
-    else if(minute>0&&minuteSess==='pre'){price=minute;source='preMarket';}
-    else if(pre>0){price=pre;source='preMarket';}
-  }else{
+ }else if(session==='pre'){
+  price = last || minute || pre || regular || prev || 0;
+  source = 'preMarket';
+}else{
     if(regular>0){price=regular;source='regularClose';}
   }
   if(!(price>0))return null;
