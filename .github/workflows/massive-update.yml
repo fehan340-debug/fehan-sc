@@ -14,6 +14,10 @@ on:
         required: false
         default: ""
 
+concurrency:
+  group: massive-five-minute-pipeline
+  cancel-in-progress: false
+
 jobs:
   update-massive:
     runs-on: ubuntu-latest
