@@ -56,13 +56,13 @@ function withTimeout(promise,ms=7000,label='الطلب'){
   return Promise.race([promise,timeout]).finally(()=>clearTimeout(timer));
 }
 async function storeGet(key,fallback=null){
-  try{return await withTimeout(getDataStore().get(key,{type:'json'}),7000,'قراءة بيانات التنبيهات');}catch(e){console.warn('[alerts] store get failed',key,e.message);return fallback;}
+  try{return await withTimeout(getDataStore().get(key,{type:'json'}),5000,'قراءة بيانات التنبيهات');}catch(e){console.warn('[alerts] store get failed',key,e.message);return fallback;}
 }
 async function storeSetJSON(key,value){
-  return await withTimeout(getDataStore().setJSON(key,value),7000,'حفظ بيانات التنبيهات');
+  return await withTimeout(getDataStore().setJSON(key,value),5000,'حفظ بيانات التنبيهات');
 }
 async function storeDelete(key){
-  try{await withTimeout(getDataStore().delete(key),7000,'حذف بيانات التنبيهات');return true;}catch(e){console.warn('[alerts] store delete failed',key,e.message);return false;}
+  try{await withTimeout(getDataStore().delete(key),5000,'حذف بيانات التنبيهات');return true;}catch(e){console.warn('[alerts] store delete failed',key,e.message);return false;}
 }
 function supabaseConfig(){
   return {
@@ -166,6 +166,16 @@ async function readAlertHistory(email){
   return rows;
 }
 
+async function deleteAlertHistory(email,event){
+  const ticker=cleanTicker(event?.ticker), type=String(event?.type||''), createdAt=String(event?.createdAt||'');
+  const history=await storeGet(keyFor(email,'history'),[])||[];
+  const idx=Array.isArray(history)?history.findIndex(x=>cleanTicker(x?.ticker)===ticker && String(x?.type||'')===type && String(x?.createdAt||'')===createdAt):-1;
+  if(idx<0)throw new Error('التنبيه المطلوب حذفه غير موجود.');
+  const next=history.slice(); next.splice(idx,1); await storeSetJSON(keyFor(email,'history'),next);
+  const q=`stock_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}&alert_type=eq.${encodeURIComponent(type)}&created_at=eq.${encodeURIComponent(createdAt)}`;
+  const r=await supabaseTable(q,{method:'DELETE'}); if(!r.available)console.warn('[alerts] history delete mirror failed',r.status||'',r.error||'');
+  return next;
+}
 export async function evaluateUserAlerts(email,records){
   const settings=await readAlerts(email); const state=await storeGet(keyFor(email,'state'),{})||{};
   const history=await storeGet(keyFor(email,'history'),[])||[];
@@ -173,7 +183,7 @@ export async function evaluateUserAlerts(email,records){
   const byTicker=new Map((records||[]).map(x=>[cleanTicker(x?.ticker),x]));
   for(const [ticker,a] of Object.entries(settings)){
     if(!a?.enabled) continue; const row=byTicker.get(ticker); if(!row) continue;
-    const price=Number(row.extendedPrice??row.price??row.current??row.close??0), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
+    const price=Number(row.price??row.currentPrice??row.current??row.extendedPrice??row.close??0), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
     const checks=[];
     if(a.drop?.enabled){ const hit=a.drop.mode==='price' ? (Number.isFinite(price)&&price<=Number(a.drop.value)) : (Number.isFinite(change)&&change<=-Math.abs(Number(a.drop.value))); checks.push(['drop',hit,a.drop.mode==='price'?`وصل السعر إلى $${price.toFixed(2)}`:`هبوط ${Math.abs(change).toFixed(2)}%`]); }
     if(a.short?.enabled) checks.push(['short',Number.isFinite(short)&&short<=Number(a.short.value),`الشورت ${short.toLocaleString()}`]);
@@ -214,27 +224,25 @@ export async function evaluateUserAlerts(email,records){
 export async function runAlertSweep(){
   const users=await getUsers();
   const cache=await readPublishedCache().catch(()=>null);
-const currentRaw = await storeGet('scanner-current-price-v1', {}) || {};
-const massiveRaw = await storeGet('scanner-massive-current-v1', {}) || {};
-// تحويل البيانات إلى مصفوفة بغض النظر عن شكلها (سواء كانت Object أو Array)
-const currentRecords = Array.isArray(currentRaw) ? currentRaw : Object.values(currentRaw.records || currentRaw.data || currentRaw);
-const massiveRecords = Array.isArray(massiveRaw) ? massiveRaw : Object.values(massiveRaw.records || massiveRaw.data || massiveRaw);
-const liveMap = new Map(currentRecords.map(x => [cleanTicker(x?.ticker), x]));
-const massiveMap = new Map(massiveRecords.map(x => [cleanTicker(x?.ticker), x]));
-  const allTickers = Array.from(new Set([...liveMap.keys(), ...massiveMap.keys()]));
-  const records = allTickers.map(t => {
-    const mData = massiveMap.get(t) || {};
-    const cData = liveMap.get(t) || {};
-    const ind = mData.indicators || {};
-    return {
-      ...mData,
-      ...cData,
-      ticker: t,
-      extendedPrice: mData.extendedPrice || cData.extendedPrice,
-      price: mData.price || cData.price || mData.close || cData.close,
-      shortShares: mData.shortShares ?? cData.shortShares,
-      rsi: Number.isFinite(Number(cData.rsi)) ? cData.rsi : (Number.isFinite(Number(ind.rsi)) ? Number(ind.rsi) : mData.rsi)
-    };
+  const currentRaw=await storeGet('scanner-current-price-v1',{})||{};
+  const massiveRaw=await storeGet('scanner-massive-current-v1',{})||{};
+  const currentRecords=Array.isArray(currentRaw)?currentRaw:Object.values(currentRaw.records||currentRaw.data||currentRaw);
+  const massiveRecords=Array.isArray(massiveRaw)?massiveRaw:Object.values(massiveRaw.records||massiveRaw.data||massiveRaw);
+  const cachedRecords=Array.isArray(cache?.records)?cache.records:Object.values(cache?.records||{});
+  const liveMap=new Map(currentRecords.map(x=>[cleanTicker(x?.ticker),x]));
+  const massiveMap=new Map(massiveRecords.map(x=>[cleanTicker(x?.ticker),x]));
+  const cacheMap=new Map(cachedRecords.map(x=>[cleanTicker(x?.ticker),x]));
+  const allTickers=Array.from(new Set([...liveMap.keys(),...massiveMap.keys(),...cacheMap.keys()]));
+  const records=allTickers.map(t=>{
+    const c=liveMap.get(t)||{},m=massiveMap.get(t)||{},base=cacheMap.get(t)||{},ind=m.indicators||base.indicators||{};
+    return {...base,...m,...c,ticker:t,
+      price:c.price??c.currentPrice??m.price??m.currentPrice??base.currentPrice??base.current??base.price,
+      current:c.price??c.current??base.current,
+      currentPrice:c.price??c.currentPrice??base.currentPrice??base.current,
+      extendedPrice:c.extendedPrice??m.extendedPrice??base.extendedPrice,
+      changePct:c.changePct??m.changePct??base.changePct??base.changePercent,
+      shortShares:c.shortShares??m.shortShares??base.shortShares,
+      rsi:Number.isFinite(Number(c.rsi))?Number(c.rsi):(Number.isFinite(Number(m.rsi))?Number(m.rsi):(Number.isFinite(Number(ind.rsi))?Number(ind.rsi):base.rsi))};
   });
   if(!records.length)return {ok:true,users:0,fired:0,reason:'no-market-data'};
   let fired=0, usersChecked=0;
@@ -262,7 +270,7 @@ export default async function(request){
       if(request.method==='POST'){const b=await readJson(request);const a=cleanAlert(b);await upsertAlert(email,a);return json({ok:true,settings:await readAlerts(email),telegram:await createUserTelegramLink(email)});}
       if(request.method==='DELETE'){const b=await readJson(request);const ticker=cleanTicker(b.ticker);await deleteAlert(email,ticker);return json({ok:true,settings:await readAlerts(email)});}
     }
-    if(action==='history'){return json({ok:true,items:await readAlertHistory(email)});}
+    if(action==='history'){if(request.method==='GET')return json({ok:true,items:await readAlertHistory(email)});if(request.method==='DELETE'){const b=await readJson(request);return json({ok:true,items:await deleteAlertHistory(email,b)});}}
     if(action==='telegram-link'){return json({ok:true,telegram:await createUserTelegramLink(email)});}
     if(action==='telegram-test'){
       if(c.user.admin!==true)return json({ok:false,error:'هذا الاختبار متاح للمدير فقط.'},403);

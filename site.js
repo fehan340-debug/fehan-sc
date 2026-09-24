@@ -102,23 +102,18 @@ function alertCriteriaText(a){
   return out;
 }
 function renderActiveNotifications(settings){
-  const list=$('activeNotificationList');
-  const count=$('activeNotificationCount');
-  if(!list)return;
-  const items=Object.values(settings||{}).filter(a=>a?.enabled);
-  if(count)count.textContent=items.length.toLocaleString('ar-SA');
-  list.innerHTML=items.length?items.map(a=>{
-    const criteria=alertCriteriaText(a);
-    return `<div class="notificationItem activeNotificationItem"><div class="notificationItemMain"><b>${escapeHtml(a.ticker||'—')}</b><div class="small">${criteria.length?criteria.map(escapeHtml).join(' · '):'التنبيه مفعّل'}</div></div><span class="notificationActiveBadge">مفعّل</span></div>`;
-  }).join(''):'<div class="small">لا توجد تنبيهات مفعلة حاليًا.</div>';
+  const list=$('activeNotificationList'); const count=$('activeNotificationCount');
+  const items=Object.values(settings||{}).filter(a=>a?.enabled); if(count)count.textContent=items.length;
+  list.innerHTML=items.length?items.map(a=>{const criteria=alertCriteriaText(a);return `<div class="notificationItem activeNotificationItem"><div class="notificationItemMain"><b>${escapeHtml(a.ticker||'—')}</b><div class="small">${criteria.length?criteria.map(escapeHtml).join(' · '):'التنبيه مفعّل'}</div></div><button type="button" class="notificationDeleteBtn" data-ticker="${escapeHtml(a.ticker||'')}" title="حذف التنبيه">🗑️ حذف</button></div>`;}).join(''):'<div class="small">لا توجد تنبيهات مفعلة حاليًا.</div>';
+  list.querySelectorAll('.notificationDeleteBtn').forEach(btn=>btn.addEventListener('click',()=>deleteActiveNotification(btn.dataset.ticker)));
 }
 function renderNotificationHistory(items){
-  const list=$('notificationList');
-  const count=$('triggeredNotificationCount');
-  if(!list)return;
-  if(count)count.textContent=(items||[]).length.toLocaleString('ar-SA');
-  list.innerHTML=(items||[]).length?items.map(x=>`<div class="notificationItem"><div class="notificationItemMain"><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="small notificationTime">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div></div>`).join(''):'<div class="small">لم يتم إطلاق أي تنبيه حتى الآن.</div>';
+  const list=$('notificationList'); const count=$('triggeredNotificationCount'); if(count)count.textContent=(items||[]).length;
+  list.innerHTML=(items||[]).length?items.map((x,i)=>`<div class="notificationItem"><div class="notificationItemMain"><b>${escapeHtml(x.title||x.ticker||'تنبيه')}</b><div class="small">${escapeHtml(x.message||'')}</div></div><div class="notificationHistoryActions"><div class="small notificationTime">${x.createdAt?new Date(x.createdAt).toLocaleString('ar-SA'):'—'}</div><button type="button" class="notificationDeleteBtn" data-history-index="${i}" title="حذف التنبيه">🗑️</button></div></div>`).join(''):'<div class="small">لم يتم إطلاق أي تنبيه حتى الآن.</div>';
+  list.querySelectorAll('[data-history-index]').forEach(btn=>btn.addEventListener('click',()=>deleteHistoryNotification(Number(btn.dataset.historyIndex),items||[])));
 }
+async function deleteActiveNotification(ticker){if(!ticker)return;if(!confirm(`حذف تنبيه ${ticker}؟`))return;try{const r=await apiFetch('/.netlify/functions/alerts?action=settings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker})});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حذف التنبيه.');alertSettings=d.settings||{};renderActiveNotifications(alertSettings);renderFavorites();}catch(e){alert(e.message||'تعذر حذف التنبيه.');}}
+async function deleteHistoryNotification(index,items){const item=items?.[index];if(!item)return;if(!confirm('حذف هذا التنبيه من السجل؟'))return;try{const r=await apiFetch('/.netlify/functions/alerts?action=history',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(item)});const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر حذف التنبيه من السجل.');renderNotificationHistory(d.items||[]);const remaining=d.items||[];$('notificationBadge')?.classList.toggle('hidden',!remaining.length);if($('notificationBadge'))$('notificationBadge').textContent=Math.min(remaining.length,99);}catch(e){alert(e.message||'تعذر حذف التنبيه من السجل.');}}
 async function loadNotificationHistory(){
   try{
     const d=await getJSON('/.netlify/functions/alerts?action=history');
@@ -150,31 +145,15 @@ async function loadActiveNotifications(){
   }
 }
 async function openNotificationBell(){
-  const panel=$('notificationPanel');
-  const setup=$('telegramFirstSetup');
-  const active=$('activeNotificationList');
-  const list=$('notificationList');
-  if(!panel)return;
-  panel.classList.add('show');
-  if(active)active.innerHTML='<div class="small">جاري تحميل التنبيهات المفعلة...</div>';
-  if(list)list.innerHTML='<div class="small">جاري تحميل سجل التنبيهات...</div>';
-  try{
-    const d=await getJSON('/.netlify/functions/alerts?action=telegram-link',1);
-    telegramState=d.telegram||{linked:false,link:null};
-    renderTelegramLinkState();
-    if(setup){
-      if(telegramState.linked){setup.style.display='none';}
-      else{setup.style.display='block';const link=$('telegramFirstSetupLink');if(link){link.href=telegramState.link||'#';link.style.display=telegramState.link?'inline-flex':'none';}}
-    }
-  }catch(e){
-    console.warn('telegram link',e.message);
-    if(setup)setup.style.display='none';
-  }
+  const panel=$('notificationPanel'),setup=$('telegramFirstSetup'),active=$('activeNotificationList'),list=$('notificationList'); if(!panel)return;
+  panel.classList.add('show'); if(active)active.innerHTML='<div class="small">جاري تحميل التنبيهات المفعلة...</div>'; if(list)list.innerHTML='<div class="small">جاري تحميل سجل التنبيهات...</div>';
   await Promise.allSettled([loadActiveNotifications(),loadNotificationHistory()]);
-  // Never leave the panel in a perpetual loading state.
-  if(active && /جاري تحميل/.test(active.textContent||''))active.innerHTML='<div class="small">تعذر تحميل التنبيهات المفعلة الآن. حاول مرة أخرى.</div>';
-  if(list && /جاري تحميل/.test(list.textContent||''))list.innerHTML='<div class="small">تعذر تحميل سجل التنبيهات الآن. حاول مرة أخرى.</div>';
+  const telegram=telegramState||{linked:false,link:null};
+  if(setup){if(telegram.linked)setup.style.display='none';else{setup.style.display='block';const link=$('telegramFirstSetupLink');if(link){link.href=telegram.link||'#';link.style.display=telegram.link?'inline-flex':'none';}}}
+  if(active&&/جاري تحميل/.test(active.textContent||''))active.innerHTML='<div class="small">تعذر تحميل التنبيهات المفعلة الآن. حاول مرة أخرى.</div>';
+  if(list&&/جاري تحميل/.test(list.textContent||''))list.innerHTML='<div class="small">تعذر تحميل سجل التنبيهات الآن. حاول مرة أخرى.</div>';
 }
+
 
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
