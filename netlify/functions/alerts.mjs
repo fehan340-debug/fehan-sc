@@ -110,11 +110,16 @@ async function readAlerts(email){
 }
 
 async function upsertAlert(email,a){
-  const all=await storeGet(keyFor(email,'settings'),{})||{};
-  all[a.ticker]=a;
-  // Persist the mirror FIRST so the customer gets the alert immediately even if
-  // the optional relational table is unavailable.
-  await storeSetJSON(keyFor(email,'settings'),all);
+  const all = await storeGet(keyFor(email, 'settings'), {}) || {};
+const existingTickerAlert = all[a.ticker] || {};
+all[a.ticker] = {
+    ...existingTickerAlert,
+    ...a,
+    drop: a.drop?.enabled ? a.drop : existingTickerAlert.drop,
+    short: a.short?.enabled ? a.short : existingTickerAlert.short,
+    rsi: a.rsi?.enabled ? a.rsi : existingTickerAlert.rsi,
+    enabled: true
+};
   const row=alertObjectToRow(email,a);
   const r=await supabaseTable('user_alerts',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify(row)});
   if(!r.available)console.warn('[alerts] user_alerts mirror saved; Supabase table unavailable',r.status||'',r.error||'');
@@ -199,10 +204,12 @@ export async function evaluateUserAlerts(email,records){
 export async function runAlertSweep(){
   const users=await getUsers();
   const cache=await readPublishedCache().catch(()=>null);
-  const current=await storeGet('scanner-current-price-v1',{})||{};
-  const massive=await storeGet('scanner-massive-current-v1',{})||{};
-  const liveMap=new Map((current.records||[]).map(x=>[cleanTicker(x?.ticker),x]));
-  const massiveMap=new Map((massive.records||[]).map(x=>[cleanTicker(x?.ticker),x]));
+  const currentRaw = await storeGet('scanner-current-price-v1', {}) || {};
+const massiveRaw = await storeGet('scanner-massive-current-v1', {}) || {};
+const currentRecords = Array.isArray(currentRaw) ? currentRaw : (currentRaw.records || currentRaw.data || []);
+const massiveRecords = Array.isArray(massiveRaw) ? massiveRaw : (massiveRaw.records || massiveRaw.data || []);
+const liveMap = new Map(currentRecords.map(x => [cleanTicker(x?.ticker), x]));
+const massiveMap = new Map(massiveRecords.map(x => [cleanTicker(x?.ticker), x]));
   const allTickers = Array.from(new Set([...liveMap.keys(), ...massiveMap.keys()]));
   const records = allTickers.map(t => {
     const mData = massiveMap.get(t) || {};
