@@ -386,7 +386,11 @@ async function loadCurrentPrices(){
       for(const row of scannerCache){
         const live=map[String(row?.ticker||'').toUpperCase()];
         if(!live)continue;
-        row.current=live.price; row.currentPrice=live.price; row.preMarketPrice=live.preMarket; row.afterHoursPrice=live.afterHours; row.priceSession=live.priceSession; row.priceSource=live.priceSource; row.currentUpdatedAt=live.updatedAt; row.changePct=live.changePct;
+row.current = live.extendedPrice ?? live.price ?? live.current;
+row.currentPrice = live.extendedPrice ?? live.price ?? live.current;
+row.preMarketPrice = live.preMarketPrice ?? live.pre ?? live.extendedPrice;
+row.afterHoursPrice = live.afterHoursPrice ?? live.after ?? live.extendedPrice;
+row.pricesSession = d.session || row.pricesSession;
       }
       updateVisibleCurrentPrices();
     }
