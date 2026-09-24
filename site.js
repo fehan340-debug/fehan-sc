@@ -398,10 +398,10 @@ async function loadCurrentPrices(){
       for(const row of scannerCache){
         const live=map[String(row?.ticker||'').toUpperCase()];
         if(!live)continue;
-        row.current = live.price; 
-row.currentPrice = live.price; 
-row.preMarketPrice = live.preMarketPrice ?? live.preMarket ?? live.pre; 
-row.afterHoursPrice = live.afterHoursPrice ?? live.afterHours ?? live.after;
+     row.current = live.extendedPrice ?? live.price ?? live.current;
+row.currentPrice = live.extendedPrice ?? live.price ?? live.current;
+row.preMarketPrice = live.preMarketPrice ?? live.pre ?? live.extendedPrice;
+row.afterHoursPrice = live.afterHoursPrice ?? live.after ?? live.extendedPrice;
 row.priceSession = d.session || row.priceSession;
       }
       updateVisibleCurrentPrices();
