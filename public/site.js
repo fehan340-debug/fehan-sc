@@ -349,17 +349,17 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-    const session = String(stock?.priceSession || "").toLowerCase();
+    const session = String(stock?.priceSession || currentPricesSession || "").toLowerCase();
     
-    // استخراج الأسعار الحية من بيانات Massive مباشرة
+    // استخراج الأسعار الحية من بيانات Massive مباشرة وبدائلها الآمنة
     const pre = Number(stock?.preMarketPrice ?? stock?.pre ?? stock?.raw?.preMarket?.p);
     const after = Number(stock?.afterHoursPrice ?? stock?.after ?? stock?.raw?.afterHours?.p);
     const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price ?? stock?.raw?.lastTrade?.p);
-    const close = Number(stock?.closePrice ?? stock?.close);
+    const close = Number(stock?.closePrice ?? stock?.close ?? stock?.raw?.close);
 
     const valid = v => Number.isFinite(v) && v > 0 ? v : null;
 
-    // التسلسل الذكي حسب حالة السوق
+    // التسلسل الذكي حسب حالة السوق الحالية
     if(session === 'pre') {
         return valid(pre) ?? valid(current) ?? valid(close);
     }
