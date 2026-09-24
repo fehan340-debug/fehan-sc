@@ -382,23 +382,18 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-  const session=String(stock?.priceSession||"").toLowerCase();
-  const pre=Number(stock?.preMarketPrice);
-  const after=Number(stock?.afterHoursPrice);
-  const current=Number(stock?.currentPrice ?? stock?.current);
-  const finvizPre=Number(stock?.finvizPreMarketPrice);
-  const finvizAfter=Number(stock?.finvizAfterHoursPrice);
-  const finvizPrice=Number(stock?.finvizPrice);
-  const close=Number(stock?.closePrice);
-  if(session==="pre"&&Number.isFinite(pre)&&pre>0)return pre;
-  if(session==="pre"&&Number.isFinite(finvizPre)&&finvizPre>0)return finvizPre;
-  if(session==="after"&&Number.isFinite(after)&&after>0)return after;
-  if(session==="after"&&Number.isFinite(finvizAfter)&&finvizAfter>0)return finvizAfter;
-  if(Number.isFinite(current)&&current>0)return current;
-  if(Number.isFinite(finvizPrice)&&finvizPrice>0)return finvizPrice;
-  if(session==="pre"&&Number.isFinite(pre)&&pre>0)return pre;
-  if(session==="after"&&Number.isFinite(after)&&after>0)return after;
-  return Number.isFinite(close)&&close>0?close:null;
+  const session = String(stock?.priceSession || "").toLowerCase();
+    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price ?? stock?.extendedPrice);
+    const pre = Number(stock?.preMarketPrice);
+    const after = Number(stock?.afterHoursPrice);
+    const close = Number(stock?.closePrice ?? stock?.close);
+    if (session.includes("pre") && Number.isFinite(pre) && pre > 0) return pre;
+    if ((session.includes("after") || session.includes("post")) && Number.isFinite(after) && after > 0) return after;
+    if (Number.isFinite(current) && current > 0) return current;
+    if (session.includes("pre") && Number.isFinite(pre) && pre > 0) return pre;
+    if ((session.includes("after") || session.includes("post")) && Number.isFinite(after) && after > 0) return after;
+    if (Number.isFinite(close) && close > 0) return close;
+    return current || pre || after || close || '-';
 }
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
 async function loadCurrentPrices(){
