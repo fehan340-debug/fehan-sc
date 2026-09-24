@@ -158,7 +158,7 @@ export async function evaluateUserAlerts(email,records){
   const byTicker=new Map((records||[]).map(x=>[cleanTicker(x?.ticker),x]));
   for(const [ticker,a] of Object.entries(settings)){
     if(!a?.enabled) continue; const row=byTicker.get(ticker); if(!row) continue;
-    const price=Number(row.currentPrice??row.current), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
+    const price=Number(row.extendedPrice??row.price??row.current??row.close??0), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
     const checks=[];
     if(a.drop?.enabled){ const hit=a.drop.mode==='price' ? (Number.isFinite(price)&&price<=Number(a.drop.value)) : (Number.isFinite(change)&&change<=-Math.abs(Number(a.drop.value))); checks.push(['drop',hit,a.drop.mode==='price'?`وصل السعر إلى $${price.toFixed(2)}`:`هبوط ${Math.abs(change).toFixed(2)}%`]); }
     if(a.short?.enabled) checks.push(['short',Number.isFinite(short)&&short<=Number(a.short.value),`الشورت ${short.toLocaleString()}`]);
@@ -203,8 +203,21 @@ export async function runAlertSweep(){
   const massive=await storeGet('scanner-massive-current-v1',{})||{};
   const liveMap=new Map((current.records||[]).map(x=>[cleanTicker(x?.ticker),x]));
   const massiveMap=new Map((massive.records||[]).map(x=>[cleanTicker(x?.ticker),x]));
-  const baseRecords=Array.isArray(cache?.records)&&cache.records.length?cache.records:(Array.isArray(massive?.records)?massive.records:[]);
-  const records=baseRecords.map(x=>{const t=cleanTicker(x?.ticker);const live=liveMap.get(t)||massiveMap.get(t);const ind=massiveMap.get(t)?.indicators||{};return live?{...x,current:live.price,currentPrice:live.price,changePct:live.changePct,priceSource:live.priceSource,priceSession:live.priceSession,shortShares:x.shortShares, rsi:Number.isFinite(Number(x.rsi))?x.rsi:(Number.isFinite(Number(ind.rsi))?Number(ind.rsi):x.rsi)}:x;});
+  const allTickers = Array.from(new Set([...liveMap.keys(), ...massiveMap.keys()]));
+  const records = allTickers.map(t => {
+    const mData = massiveMap.get(t) || {};
+    const cData = liveMap.get(t) || {};
+    const ind = mData.indicators || {};
+    return {
+      ...mData,
+      ...cData,
+      ticker: t,
+      extendedPrice: mData.extendedPrice || cData.extendedPrice,
+      price: mData.price || cData.price || mData.close || cData.close,
+      shortShares: mData.shortShares ?? cData.shortShares,
+      rsi: Number.isFinite(Number(cData.rsi)) ? cData.rsi : (Number.isFinite(Number(ind.rsi)) ? Number(ind.rsi) : mData.rsi)
+    };
+  });
   if(!records.length)return {ok:true,users:0,fired:0,reason:'no-market-data'};
   let fired=0, usersChecked=0;
   for(const email of Object.keys(users)){ const a=await readAlerts(email); if(!Object.keys(a).length)continue; usersChecked++; const r=await evaluateUserAlerts(email,records); fired+=r.fired.length; }
