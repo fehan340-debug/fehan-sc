@@ -1,6 +1,6 @@
 import { store } from './store.mjs';
 import { runHourlyBuild, publishPreparedTechnical } from '../netlify/functions/scanner-hourly-core.mjs';
-import { runAlertSweep } from '../alerts.mjs';
+import { runAlertSweep } from '../netlify/functions/alerts.mjs';
 const BASE='https://api.massive.com';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const finite=v=>Number.isFinite(Number(v))?Number(v):null;
