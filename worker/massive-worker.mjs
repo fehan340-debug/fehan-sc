@@ -163,12 +163,12 @@ async function main(){
   await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
   await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:new Date().toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,indicatorTickers:Object.keys(indicators).length,error:null,technicalPreparedAt:prepared?.preparedAt||null,publication:publication?.publishedAt||null});
   await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:now.toISOString(),massive_updated_at:now.toISOString(),massive_session:session,technical_prepared_at:prepared?.preparedAt||null,technical_publication_at:publication?.publishedAt||null});
-  console.log(JSON.stringify({ok:true,session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,indicatorTickers:Object.keys(indicators).length,preparedAt:prepared?.preparedAt||null,publishedPrevious:publication?.published||false,publishedAt:publication?.publishedAt||null}));
 console.log('[worker] Starting alert sweep...');
-try {
-    const alertResult = await runAlertSweep();
-    console.log('[worker] Alert sweep finished with result:', alertResult);
-} catch (err) {
-    console.error('[worker] Alert sweep crashed:', err);
+    try {
+        const alertResult = await runAlertSweep();
+        console.log('[worker] Alert sweep finished with result:', alertResult);
+    } catch (err) {
+        console.error('[worker] Alert sweep crashed:', err);
+    }
 }
-main().catch(async e=>{console.error(e);await store.setJSON('scanner-current-price-status',{state:'error',updatedAt:new Date().toISOString(),error:String(e?.message||e)}).catch(()=>{});process.exitCode=1;});
+  main().catch(async e=>{console.error(e);await store.setJSON('scanner-current-price-status',{state:'error',updatedAt:new Date().toISOString(),error:String(e?.message||e)}).catch(()=>{});process.exitCode=1;});
