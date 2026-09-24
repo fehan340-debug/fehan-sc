@@ -494,7 +494,7 @@ $("pause").onclick=()=>{if(!running||stopped)return;paused=true;$("pause").disab
 $("resume").onclick=()=>{if(!running||stopped)return;paused=false;$("pause").disabled=false;$("resume").disabled=true;setStatus(`▶ تم استئناف البحث — النتائج الحالية: <b>${results}</b>.`);};
 $("stop").onclick=()=>{if(!running)return;stopped=true;paused=false;if(scanAbortController)scanAbortController.abort();$("stop").disabled=true;$("pause").disabled=true;$("resume").disabled=true;$("stop").textContent="⏹ جارٍ الإيقاف...";setStatus(`جارٍ إيقاف البحث... النتائج الحالية: <b>${results}</b>.`);};
 
-async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث بيانات المفضلة…';await refreshFavoriteData(true);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
+async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث الأسعار…';refreshFavoriteData(false);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
 function renderFavorites(){const body=$('favoritesResults');if(!body)return;body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';for(const f of favoriteItems){const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">—</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">—</td><td class="fv-fee">—</td><td class="fv-float">—</td><td class="fv-change">—</td>`;tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);}}
 function emaSeries(values,period){if(!Array.isArray(values)||values.length<period)return [];const k=2/(period+1);let ema=values.slice(0,period).reduce((a,b)=>a+b,0)/period;const out=[ema];for(let i=period;i<values.length;i++){ema=(values[i]-ema)*k+ema;out.push(ema);}return out;}
 function cciValue(bars,period=14){if(!Array.isArray(bars)||bars.length<period)return NaN;const tp=bars.map(b=>(Number(b.h)+Number(b.l)+Number(b.c))/3);const w=tp.slice(-period),mean=w.reduce((a,b)=>a+b,0)/period,dev=w.reduce((a,b)=>a+Math.abs(b-mean),0)/period;return dev===0?0:(tp[tp.length-1]-mean)/(0.015*dev);}
@@ -549,22 +549,37 @@ async function runFavoriteDetails(f,tr){
  showDetailsLoading(f);
  try{await loadScannerCache();const x=cacheFind(f);if(!x)throw Error('بيانات هذا السهم غير موجودة في التخزين الحالي.');const dropPct=Number.isFinite(Number(x.splitOpen))&&Number.isFinite(Number(x.current))?(Number(x.splitOpen)-Number(x.current))/Number(x.splitOpen)*100:NaN;const rows=[['السهم',x.ticker],['افتتاح يوم التقسيم',Number.isFinite(Number(x.splitOpen))?'$'+fmt(x.splitOpen):'غير متاح'],['الهدف',Number.isFinite(Number(x.splitOpen))?'$'+fmt(Number(x.splitOpen)*(1-Number($('drop').value||0)/100)):'غير متاح'],['السعر الحالي',Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'غير متاح'],['نسبة الهبوط',Number.isFinite(dropPct)?fmt(dropPct)+'%':'غير متاح'],['تاريخ التقسيم',x.splitDate||'غير متاح'],['RSI (14)',Number.isFinite(Number(x.rsi))?fmt(x.rsi):'غير متاح'],['القاع',Number.isFinite(Number(x.low))?'$'+fmt(x.low):'غير متاح'],['تاريخ القاع',x.lowDate||'غير متاح'],['IBKR Available Shares',Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'غير متاح'],['IBKR Borrow Fee',Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'غير متاح'],['Free Float',formatCompactShares(x.freeFloat)==='—'?'غير متاح':formatCompactShares(x.freeFloat)]];$('detailsTitle').textContent='تفاصيل السهم — '+x.ticker;$('detailsRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');$('detailsNote').textContent='بيانات محدثة محفوظة في الموقع.';$('detailsModal').classList.add('show');}catch(e){$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر عرض التفاصيل')+'</span></div>';$("detailsNote").textContent='تعذر تحميل التفاصيل.';}finally{if(btn)btn.disabled=false;}
 }
-async function refreshFavoriteData(full=true){
+async function refreshFavoriteData(full=false){
   if(favoriteRefreshing||!favoriteItems.length)return; favoriteRefreshing=true;
   try{
-    // Keep the current snapshot visible, then refresh the published cache and
-    // the live-price lane. A failed live refresh must not turn existing values
-    // into dashes.
-    if(!Array.isArray(scannerCache)||!scannerCache.length)await loadScannerCache({force:true,maxAttempts:3});
-    await loadCurrentPrices();
-    if(full)await loadScannerCache({force:true,maxAttempts:3});
+    // تحديث واجهة المفضلة بسرعة: نستخدم الكاش الموجود فوراً ثم نطلب السعر اللحظي.
+    // لا ننتظر إعادة بناء كاش الباحث لأنها عملية أثقل وليست مطلوبة لعرض السعر الحالي.
+    if(!Array.isArray(scannerCache)||!scannerCache.length){
+      await loadScannerCache({force:false,maxAttempts:1});
+    }
     await loadCurrentPrices();
     let done=0;
-    for(const f of favoriteItems){const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));if(!tr)continue;const x=cacheFind(f);if(!x)continue;const oldPrice=tr.querySelector('.fv-price').textContent,oldChange=tr.querySelector('.fv-change').textContent,oldShort=tr.querySelector('.fv-short').textContent,oldFee=tr.querySelector('.fv-fee').textContent,oldFloat=tr.querySelector('.fv-float').textContent;const price=displayPrice(x);if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);if(Number.isFinite(Number(x.changePct)))tr.querySelector('.fv-change').textContent=(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%';if(Number.isFinite(Number(x.shortShares)))tr.querySelector('.fv-short').textContent=Number(x.shortShares).toLocaleString();if(Number.isFinite(Number(x.borrowFee)))tr.querySelector('.fv-fee').textContent=fmt(x.borrowFee,2)+'%';const ff=formatCompactShares(x.freeFloat);if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;done++;}
-    $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${cacheAgeText()}`;
+    for(const f of favoriteItems){
+      const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));
+      if(!tr)continue;
+      const x=cacheFind(f);if(!x)continue;
+      const price=displayPrice(x);
+      if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);
+      if(Number.isFinite(Number(x.changePct)))tr.querySelector('.fv-change').textContent=(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%';
+      if(Number.isFinite(Number(x.shortShares)))tr.querySelector('.fv-short').textContent=Number(x.shortShares).toLocaleString();
+      if(Number.isFinite(Number(x.borrowFee)))tr.querySelector('.fv-fee').textContent=fmt(x.borrowFee,2)+'%';
+      const ff=formatCompactShares(x.freeFloat);if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;
+      done++;
+    }
+    $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${currentPricesUpdatedAt?freshnessLabel(currentPricesUpdatedAt):cacheAgeText()}`;
+    // إذا طُلب تحديث كامل، حدّث الكاش الثقيل في الخلفية فقط، ثم حدّث العرض مرة أخرى.
+    if(full){
+      refreshScannerCacheInBackground().then(()=>loadCurrentPrices()).catch(()=>{});
+    }
   }catch(e){$('favoritesStatus').textContent='تعذر تحديث المفضلة: '+(e.message||'خطأ');} finally{favoriteRefreshing=false;}
 }
-function startFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);refreshFavoriteData(true);favoriteRefreshTimer=setInterval(()=>{if($('sec-favorites')?.classList.contains('active'))refreshFavoriteData(true)},120000);}
+
+function startFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);refreshFavoriteData(false);favoriteRefreshTimer=setInterval(()=>{if($('sec-favorites')?.classList.contains('active'))refreshFavoriteData(false)},30000);}
 function stopFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);favoriteRefreshTimer=null;}
 
 async function loadIPOs(){
