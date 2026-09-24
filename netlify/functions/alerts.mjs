@@ -214,10 +214,11 @@ export async function evaluateUserAlerts(email,records){
 export async function runAlertSweep(){
   const users=await getUsers();
   const cache=await readPublishedCache().catch(()=>null);
-  const currentRaw = await storeGet('scanner-current-price-v1', {}) || {};
+const currentRaw = await storeGet('scanner-current-price-v1', {}) || {};
 const massiveRaw = await storeGet('scanner-massive-current-v1', {}) || {};
-const currentRecords = Array.isArray(currentRaw) ? currentRaw : (currentRaw.records || currentRaw.data || []);
-const massiveRecords = Array.isArray(massiveRaw) ? massiveRaw : (massiveRaw.records || massiveRaw.data || []);
+// تحويل البيانات إلى مصفوفة بغض النظر عن شكلها (سواء كانت Object أو Array)
+const currentRecords = Array.isArray(currentRaw) ? currentRaw : Object.values(currentRaw.records || currentRaw.data || currentRaw);
+const massiveRecords = Array.isArray(massiveRaw) ? massiveRaw : Object.values(massiveRaw.records || massiveRaw.data || massiveRaw);
 const liveMap = new Map(currentRecords.map(x => [cleanTicker(x?.ticker), x]));
 const massiveMap = new Map(massiveRecords.map(x => [cleanTicker(x?.ticker), x]));
   const allTickers = Array.from(new Set([...liveMap.keys(), ...massiveMap.keys()]));
