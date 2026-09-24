@@ -349,26 +349,30 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-    const session = String(stock?.priceSession || currentPricesSession || "").toLowerCase();
+    const session = String(stock?.priceSession || "").toLowerCase();
     
-    // استخراج الأسعار الحية من بيانات Massive مباشرة وبدائلها الآمنة
-    const pre = Number(stock?.preMarketPrice ?? stock?.pre ?? stock?.raw?.preMarket?.p);
-    const after = Number(stock?.afterHoursPrice ?? stock?.after ?? stock?.raw?.afterHours?.p);
-    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price ?? stock?.raw?.lastTrade?.p);
-    const close = Number(stock?.closePrice ?? stock?.close ?? stock?.raw?.close);
+    const pre = Number(stock?.preMarketPrice ?? stock?.pre);
+    const after = Number(stock?.afterHoursPrice ?? stock?.after);
+    const extended = Number(stock?.extendedPrice ?? stock?.extended);
+    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price);
+    const close = Number(stock?.closePrice ?? stock?.close);
 
-    const valid = v => Number.isFinite(v) && v > 0 ? v : null;
+    const isValid = v => Number.isFinite(v) && v > 0;
 
-    // التسلسل الذكي حسب حالة السوق الحالية
-    if(session === 'pre') {
-        return valid(pre) ?? valid(current) ?? valid(close);
-    }
-    if(session === 'after') {
-        return valid(after) ?? valid(current) ?? valid(close);
-    }
+    // 1. التوجيه حسب حالة الجلسة الحالية
+    if (session.includes("pre") && isValid(pre)) return pre;
+    if ((session.includes("after") || session.includes("post")) && isValid(after)) return after;
     
-    // للجلسة العادية
-    return valid(current) ?? valid(pre) ?? valid(after) ?? valid(close);
+    // 2. إعطاء الأولوية المطلقة للأسعار الحية والممتدة
+    if (isValid(extended)) return extended;
+    if (isValid(current)) return current;
+    if (isValid(pre)) return pre;
+    if (isValid(after)) return after;
+    
+    // 3. الحل الأخير
+    if (isValid(close)) return close;
+    
+    return '-';
 }
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
 async function loadCurrentPrices(){
