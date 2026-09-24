@@ -349,23 +349,26 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-  const session=String(stock?.priceSession||"").toLowerCase();
-  const pre=Number(stock?.preMarketPrice);
-  const after=Number(stock?.afterHoursPrice);
-  const current=Number(stock?.currentPrice ?? stock?.current);
-  const finvizPre=Number(stock?.finvizPreMarketPrice);
-  const finvizAfter=Number(stock?.finvizAfterHoursPrice);
-  const finvizPrice=Number(stock?.finvizPrice);
-  const close=Number(stock?.closePrice);
-  if(session==="pre"&&Number.isFinite(pre)&&pre>0)return pre;
-  if(session==="pre"&&Number.isFinite(finvizPre)&&finvizPre>0)return finvizPre;
-  if(session==="after"&&Number.isFinite(after)&&after>0)return after;
-  if(session==="after"&&Number.isFinite(finvizAfter)&&finvizAfter>0)return finvizAfter;
-  if(Number.isFinite(current)&&current>0)return current;
-  if(Number.isFinite(finvizPrice)&&finvizPrice>0)return finvizPrice;
-  if(session==="pre"&&Number.isFinite(pre)&&pre>0)return pre;
-  if(session==="after"&&Number.isFinite(after)&&after>0)return after;
-  return Number.isFinite(close)&&close>0?close:null;
+    const session = String(stock?.priceSession || "").toLowerCase();
+    
+    // استخراج الأسعار الحية من بيانات Massive مباشرة
+    const pre = Number(stock?.preMarketPrice ?? stock?.pre ?? stock?.raw?.preMarket?.p);
+    const after = Number(stock?.afterHoursPrice ?? stock?.after ?? stock?.raw?.afterHours?.p);
+    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price ?? stock?.raw?.lastTrade?.p);
+    const close = Number(stock?.closePrice ?? stock?.close);
+
+    const valid = v => Number.isFinite(v) && v > 0 ? v : null;
+
+    // التسلسل الذكي حسب حالة السوق
+    if(session === 'pre') {
+        return valid(pre) ?? valid(current) ?? valid(close);
+    }
+    if(session === 'after') {
+        return valid(after) ?? valid(current) ?? valid(close);
+    }
+    
+    // للجلسة العادية
+    return valid(current) ?? valid(pre) ?? valid(after) ?? valid(close);
 }
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
 async function loadCurrentPrices(){
