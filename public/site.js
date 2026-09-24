@@ -1256,3 +1256,25 @@ function activateSection(name){
 }
 document.querySelectorAll(".navBtn").forEach(b=>b.onclick=()=>{if(activateSection(b.dataset.sec))$("drawer").classList.remove("open");});
 $("refreshFavorites").onclick=()=>refreshFavoriteData(true);$("proofClose").onclick=()=>$("proofModal").classList.remove("show");$("testClose").onclick=()=>$("testModal").classList.remove("show");$("detailsClose").onclick=()=>$("detailsModal").classList.remove("show");document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".testModal.show").forEach(m=>m.classList.remove("show"));});
+
+document.addEventListener('click', async (e) => {
+    if (e.target && e.target.id === 'clearAlertsBtn') {
+        if (!confirm('هل تريد حقاً مسح جميع حالات التنبيهات القديمة وتصفيرها؟')) return;
+        
+        try {
+            const res = await apiFetch('/.netlify/functions/alerts?action=clear', {
+                method: 'DELETE'
+            });
+            
+            if (res.ok) {
+                alert('تمت تصفير التنبيهات القديمة بنجاح!');
+                location.reload();
+            } else {
+                alert('فشل تصفير التنبيهات من السيرفر');
+            }
+        } catch (err) {
+            console.error('Error clearing alerts:', err);
+            alert('حدث خطأ أثناء الاتصال بالـ API');
+        }
+    }
+});
