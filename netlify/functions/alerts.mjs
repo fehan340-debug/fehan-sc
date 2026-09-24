@@ -108,24 +108,34 @@ async function readAlerts(email){
   if(Object.keys(out).length){try{await storeSetJSON(keyFor(email,'settings'),out);}catch{}}
   return out;
 }
-
-async function upsertAlert(email,a){
-  const all = await storeGet(keyFor(email, 'settings'), {}) || {};
-const existingTickerAlert = all[a.ticker] || {};
-all[a.ticker] = {
-    ...existingTickerAlert,
-    ...a,
-    drop: a.drop?.enabled ? a.drop : existingTickerAlert.drop,
-    short: a.short?.enabled ? a.short : existingTickerAlert.short,
-    rsi: a.rsi?.enabled ? a.rsi : existingTickerAlert.rsi,
-    enabled: true
-};
-  const row=alertObjectToRow(email,a);
-  const r=await supabaseTable('user_alerts',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify(row)});
-  if(!r.available)console.warn('[alerts] user_alerts mirror saved; Supabase table unavailable',r.status||'',r.error||'');
-  return true;
+async function upsertAlert(email, a) {
+    const all = await storeGet(keyFor(email, 'settings'), {}) || {};
+    const existing = all[a.ticker] || {};
+    all[a.ticker] = {
+        ...existing,
+        ...a,
+        // دمج خصائص التنبيهات لضمان عدم مسح القديم عند إضافة نوع جديد
+        drop: a.drop && a.drop.enabled !== undefined 
+            ? (a.drop.enabled ? a.drop : null) 
+            : existing.drop,
+        short: a.short && a.short.enabled !== undefined 
+            ? (a.short.enabled ? a.short : null) 
+            : existing.short,
+        rsi: a.rsi && a.rsi.enabled !== undefined 
+            ? (a.rsi.enabled ? a.rsi : null) 
+            : existing.rsi,
+        enabled: true
+    };
+    // تنظيف الخصائص الفارغة إذا لزم الأمر
+    if (!all[a.ticker].drop?.enabled) delete all[a.ticker].drop;
+    if (!all[a.ticker].short?.enabled) delete all[a.ticker].short;
+    if (!all[a.ticker].rsi?.enabled) delete all[a.ticker].rsi;
+    await storeSetJSON(keyFor(email, 'settings'), all);
+    const row = alertObjectToRow(email, a);
+    const r = await supabaseTable('user_alerts', { method: 'POST', headers: { 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify(row) });
+    if (!r.available) console.warn('[alerts] user_alerts upsert mirrored; Supabase unavailable', r.status);
+    return true;
 }
-
 async function deleteAlert(email,ticker){
   const all=await storeGet(keyFor(email,'settings'),{})||{};
   delete all[ticker];
