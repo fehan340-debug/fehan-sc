@@ -362,16 +362,28 @@ function toggleFavorite(item){
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
     const session = String(stock?.priceSession || "").toLowerCase();
-    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price ?? stock?.extendedPrice);
-    const pre = Number(stock?.preMarketPrice ?? stock?.preMarket);
-    const after = Number(stock?.afterHoursPrice ?? stock?.afterHours);
+    
+    const pre = Number(stock?.preMarketPrice ?? stock?.pre);
+    const after = Number(stock?.afterHoursPrice ?? stock?.after);
+    const extended = Number(stock?.extendedPrice ?? stock?.extended);
+    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price);
     const close = Number(stock?.closePrice ?? stock?.close);
-    if (session.includes("pre") && Number.isFinite(pre) && pre > 0) return pre;
-    if ((session.includes("after") || session.includes("post")) && Number.isFinite(after) && after > 0) return after;
-    if (Number.isFinite(current) && current > 0) return current;
-    if (Number.isFinite(pre) && pre > 0) return pre;
-    if (Number.isFinite(after) && after > 0) return after;
-    if (Number.isFinite(close) && close > 0) return close;
+
+    const isValid = v => Number.isFinite(v) && v > 0;
+
+    // 1. التوجيه حسب حالة الجلسة الحالية
+    if (session.includes("pre") && isValid(pre)) return pre;
+    if ((session.includes("after") || session.includes("post")) && isValid(after)) return after;
+    
+    // 2. إعطاء الأولوية المطلقة للأسعار الحية والممتدة
+    if (isValid(extended)) return extended;
+    if (isValid(current)) return current;
+    if (isValid(pre)) return pre;
+    if (isValid(after)) return after;
+    
+    // 3. الحل الأخير
+    if (isValid(close)) return close;
+    
     return '-';
 }
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
