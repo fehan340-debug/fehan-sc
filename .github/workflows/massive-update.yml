@@ -19,12 +19,12 @@ on:
 
 concurrency:
   group: massive-five-minute-pipeline
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   update-massive:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
