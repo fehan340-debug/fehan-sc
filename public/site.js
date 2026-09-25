@@ -352,6 +352,12 @@ function displayPrice(stock){
   const extended=Number(stock?.extendedPrice);
   return Number.isFinite(extended)&&extended>0?extended:'-';
 }
+function normalizeLivePrice(live){
+  const extended=Number(live?.extendedPrice);
+  if(Number.isFinite(extended)&&extended>0)return extended;
+  const sameSnapshot=Number(live?.price ?? live?.current ?? live?.currentPrice);
+  return Number.isFinite(sameSnapshot)&&sameSnapshot>0?sameSnapshot:null;
+}
 
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
 async function loadCurrentPrices(){
@@ -365,12 +371,16 @@ async function loadCurrentPrices(){
       for(const row of scannerCache){
         const live=map[String(row?.ticker||'').toUpperCase()];
         if(!live)continue;
-row.extendedPrice = live.extendedPrice;
-      row.current = live.extendedPrice;
-      row.currentPrice = live.extendedPrice;
-      row.preMarketPrice = live.preMarketPrice ?? live.extendedPrice;
-      row.afterHoursPrice = live.afterHoursPrice ?? live.extendedPrice;
-row.priceSession = d.session || row.priceSession;
+        const p=normalizeLivePrice(live);
+        if(Number.isFinite(p)&&p>0){
+          row.extendedPrice=p;
+          row.current=p;
+          row.currentPrice=p;
+        }
+        row.preMarketPrice=Number.isFinite(Number(live?.preMarket))?Number(live.preMarket):row.preMarketPrice??null;
+        row.afterHoursPrice=Number.isFinite(Number(live?.afterHours))?Number(live.afterHours):row.afterHoursPrice??null;
+        row.priceSession=d.session||row.priceSession;
+        row.currentUpdatedAt=d.updatedAt||row.currentUpdatedAt||null;
       }
       updateVisibleCurrentPrices();
     }
@@ -473,9 +483,15 @@ async function run(){
    // never delay a user's search click.
    const cutoff=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
    const selectedExchange=$("splitExchange")?.value||"ALL";
-   const candidates=scannerCache.filter(x=>(selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)&&x.splitDate>=cutoff&&Number.isFinite(Number(x.current))&&Number.isFinite(Number(x.splitOpen))&&Number(x.current)<=maxPrice&&Number(x.current)<=Number(x.splitOpen)*(1-drop/100)&&Number.isFinite(Number(x.rsi))&&Number(x.rsi)<=rsiMax&&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax)));
+   const candidates=scannerCache.filter(x=>{
+     const price=Number(x.extendedPrice);
+     return (selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)
+       &&x.splitDate>=cutoff&&Number.isFinite(price)&&price>0&&Number.isFinite(Number(x.splitOpen))
+       &&price<=maxPrice&&price<=Number(x.splitOpen)*(1-drop/100)&&Number.isFinite(Number(x.rsi))&&Number(x.rsi)<=rsiMax
+       &&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax));
+   });
    setStatus("جاري البحث...");
-   for(let i=0;i<candidates.length&&!stopped;i++){while(paused&&!stopped)await sleep(250);if(stopped)break;const x=candidates[i];setStatus("جاري البحث...");addRow({...x,target:Number(x.splitOpen)*(1-drop/100),drop:(Number(x.splitOpen)-Number(x.current))/Number(x.splitOpen)*100});scanned++;updateStats();if(i%25===0)await sleep(0);}
+   for(let i=0;i<candidates.length&&!stopped;i++){while(paused&&!stopped)await sleep(250);if(stopped)break;const x=candidates[i],price=Number(x.extendedPrice);setStatus("جاري البحث...");addRow({...x,current:price,currentPrice:price,extendedPrice:price,target:Number(x.splitOpen)*(1-drop/100),drop:(Number(x.splitOpen)-price)/Number(x.splitOpen)*100});scanned++;updateStats();if(i%25===0)await sleep(0);}
    updateSearchDataTime();
    if(stopped)setStatus(`تم الإيقاف. النتائج: <b>${results}</b>.`);else setStatus(`تم العثور على ${results} نتيجة.`,"ok");
  }catch(e){if(e?.name!=="AbortError"&&!stopped)setStatus("خطأ: "+e.message,"err")} finally{running=false;scanAbortController=null;$("start").disabled=false;$("stop").disabled=true;$("stop").textContent="■ إيقاف";$("pause").disabled=true;$("resume").disabled=true;}
@@ -493,6 +509,26 @@ function completedDailyBars(bars){const today=new Date().toISOString().slice(0,1
 function dailyChange(current,raw,bars){const prev=Number(raw?.prevDay?.c);if(Number.isFinite(current)&&Number.isFinite(prev)&&prev!==0)return (current-prev)/prev*100;const done=completedDailyBars(bars);if(done.length<2)return NaN;const a=Number(done[done.length-1].c),b=Number(done[done.length-2].c);return Number.isFinite(a)&&Number.isFinite(b)&&b!==0?(a-b)/b*100:NaN;}
 function showTestLoading(f){$("testTitle").textContent="اختبار السهم — "+f.ticker;$("testRows").innerHTML='<div class="testRow"><span class="testLabel">الحالة</span><span class="testValue">جاري تحميل التفاصيل…</span></div>';$("testNote").textContent="تم فتح النافذة فورًا، وجاري تجهيز البيانات…";$("testModal").classList.add("show");}
 function showDetailsLoading(f){$("detailsTitle").textContent="تفاصيل السهم — "+f.ticker;$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">الحالة</span><span class="testValue">جاري تحميل التفاصيل…</span></div>';$("detailsNote").textContent="تم فتح النافذة فورًا، وجاري تجهيز البيانات…";$("detailsModal").classList.add("show");}
+async function ensureFavoriteDerived4H(x,signal){
+  if(Number.isFinite(Number(x?.low4h)) && x?.low4hDate && Number.isFinite(Number(x?.low4hDays))) return x;
+  const splitDate=String(x?.splitDate||'');
+  if(!splitDate) return x;
+  try{
+    const bars=await getBars4H(x.ticker,splitDate,iso(new Date()),'favorite-4h',signal);
+    const z=lowest4H(bars,splitDate);
+    if(z.low4h!=null){
+      x.low4h=z.low4h;
+      x.low4hDate=z.low4hTime||null;
+      if(z.low4hTime){
+        const d=z.low4hTime.split('/').reverse().join('-');
+        const daily=await getBars(x.ticker,d,iso(new Date()),'favorite-4h-daily',signal);
+        x.low4hDays=tradingDaysSinceDate(daily,d);
+      }else x.low4hDays=null;
+    }
+  }catch(e){console.warn('[favorite-4h] fallback failed',x?.ticker,e?.message||e);}
+  return x;
+}
+
 async function runFavoriteTest(f,tr){
  const btn=tr?.querySelector('.favTest');if(btn)btn.disabled=true;
  showTestLoading(f);
@@ -502,6 +538,11 @@ async function runFavoriteTest(f,tr){
    // (HTTP 401), and the test is supposed to be instant and cache-only.
    const x=cacheFind(f);
    if(!x) throw Error('بيانات هذا السهم غير موجودة في الكاش الحالي.');
+   await ensureFavoriteDerived4H(x,scanAbortController?.signal);
+   if(!Number.isFinite(Number(x.sinceSplit)) && x.splitDate){
+     const daily=await getBars(x.ticker,x.splitDate,iso(new Date()),'favorite-split-age',scanAbortController?.signal);
+     x.sinceSplit=tradingDaysSinceDate(daily,x.splitDate);
+   }
    const current=Number(displayPrice(x));
    const splitOpen=Number(x.splitOpen);
    const target=Number.isFinite(splitOpen)?splitOpen*(1-Number($('drop').value||0)/100):NaN;

@@ -108,33 +108,34 @@ async function readAlerts(email){
   if(Object.keys(out).length){try{await storeSetJSON(keyFor(email,'settings'),out);}catch{}}
   return out;
 }
-async function upsertAlert(email, a) {
-    const all = await storeGet(keyFor(email, 'settings'), {}) || {};
-    const existing = all[a.ticker] || {};
-    all[a.ticker] = {
-        ...existing,
-        ...a,
-        // دمج خصائص التنبيهات لضمان عدم مسح القديم عند إضافة نوع جديد
-        drop: a.drop && a.drop.enabled !== undefined 
-            ? (a.drop.enabled ? a.drop : null) 
-            : existing.drop,
-        short: a.short && a.short.enabled !== undefined 
-            ? (a.short.enabled ? a.short : null) 
-            : existing.short,
-        rsi: a.rsi && a.rsi.enabled !== undefined 
-            ? (a.rsi.enabled ? a.rsi : null) 
-            : existing.rsi,
-        enabled: true
-    };
-    // تنظيف الخصائص الفارغة إذا لزم الأمر
-    if (!all[a.ticker].drop?.enabled) delete all[a.ticker].drop;
-    if (!all[a.ticker].short?.enabled) delete all[a.ticker].short;
-    if (!all[a.ticker].rsi?.enabled) delete all[a.ticker].rsi;
-    await storeSetJSON(keyFor(email, 'settings'), all);
-    const row = alertObjectToRow(email, a);
-    const r = await supabaseTable('user_alerts', { method: 'POST', headers: { 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify(row) });
-    if (!r.available) console.warn('[alerts] user_alerts upsert mirrored; Supabase unavailable', r.status);
-    return true;
+async function upsertAlert(email,a){
+  const all=await storeGet(keyFor(email,'settings'),{})||{};
+  const existing=all[a.ticker]||{};
+  const merged={
+    ...existing,
+    ...a,
+    drop:a.drop?.enabled?{...a.drop}:undefined,
+    short:a.short?.enabled?{...a.short}:undefined,
+    rsi:a.rsi?.enabled?{...a.rsi}:undefined,
+    enabled:Boolean(a.enabled)
+  };
+  if(!merged.drop?.enabled)delete merged.drop;
+  if(!merged.short?.enabled)delete merged.short;
+  if(!merged.rsi?.enabled)delete merged.rsi;
+  all[a.ticker]=merged;
+  if(!merged.enabled||(!merged.drop&&!merged.short&&!merged.rsi))delete all[a.ticker];
+  await storeSetJSON(keyFor(email,'settings'),all);
+  // The Data Store write above is the synchronous source of truth. Supabase is only a mirror.
+  const row=all[a.ticker];
+  if(row){
+    supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(a.ticker)}`,{method:'DELETE'})
+      .then(()=>supabaseTable('user_alerts',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(alertObjectToRow(email,row))}))
+      .catch(e=>console.warn('[alerts] user_alerts mirror failed',e?.message||e));
+  }else{
+    supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(a.ticker)}`,{method:'DELETE'})
+      .catch(e=>console.warn('[alerts] user_alerts delete mirror failed',e?.message||e));
+  }
+  return true;
 }
 async function deleteAlert(email,ticker){
   const all=await storeGet(keyFor(email,'settings'),{})||{};
@@ -155,33 +156,29 @@ async function consumeAlertType(email,ticker,type){
   else if(type==='rsi')delete next.rsi;
   else return false;
   const stillHas=Boolean(next.drop?.enabled||next.short?.enabled||next.rsi?.enabled);
-  if(stillHas){
-    all[ticker]={...next,enabled:true};
-  }else{
-    delete all[ticker];
-  }
+  if(stillHas)all[ticker]={...next,enabled:true}; else delete all[ticker];
   await storeSetJSON(keyFor(email,'settings'),all);
-  // Mirror the remaining alert configuration in Supabase. This is deliberately
-  // best-effort because the Data Store is the fast source of truth for alerts.
-  try{
-    if(stillHas){
-      const normalized=cleanAlert({...next,ticker,enabled:true});
-      await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
-      await supabaseTable('user_alerts',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(alertObjectToRow(email,normalized))});
-    }else{
-      await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
-    }
-  }catch(e){console.warn('[alerts] triggered alert mirror update failed',e?.message||e);}
+  // Do not make alert delivery wait for the optional Supabase mirror.
+  if(stillHas){
+    const normalized=cleanAlert({...next,ticker,enabled:true});
+    supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'})
+      .then(()=>supabaseTable('user_alerts',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(alertObjectToRow(email,normalized))}))
+      .catch(e=>console.warn('[alerts] triggered alert mirror update failed',e?.message||e));
+  }else{
+    supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'})
+      .catch(e=>console.warn('[alerts] triggered alert mirror delete failed',e?.message||e));
+  }
   return true;
 }
 
 async function appendAlertHistory(email,event){
   const history=await storeGet(keyFor(email,'history'),[])||[];
-  const next=[event,...history].slice(0,100);
-  await storeSetJSON(keyFor(email,'history'),next);
+  const eventKey=`${event?.ticker}:${event?.type}:${event?.createdAt}`;
+  const exists=Array.isArray(history)&&history.some(x=>`${x?.ticker}:${x?.type}:${x?.createdAt}`===eventKey);
+  if(!exists)await storeSetJSON(keyFor(email,'history'),[event,...history].slice(0,100));
   const row={user_email:String(email).toLowerCase(),ticker:event.ticker,alert_type:event.type,title:event.title,message:event.message,created_at:event.createdAt||new Date().toISOString(),payload:event};
-  const r=await supabaseTable('stock_alerts',{method:'POST',body:JSON.stringify(row)});
-  if(!r.available)console.warn('[alerts] stock_alerts mirrored; Supabase unavailable',r.status||'',r.error||'');
+  supabaseTable('stock_alerts',{method:'POST',body:JSON.stringify(row)})
+    .catch(e=>console.warn('[alerts] stock_alerts mirror failed',e?.message||e));
   return true;
 }
 
@@ -209,18 +206,17 @@ async function deleteAlertHistory(email,event){
 export async function evaluateUserAlerts(email,records,usersMap=null){
   const settings=await readAlerts(email);
   const state=await storeGet(keyFor(email,'state'),{})||{};
-  const history=await storeGet(keyFor(email,'history'),[])||[];
-  const nextState={...state}; let changed=false, fired=[];
+  const nextState={...state}; let changed=false,fired=[];
   const byTicker=new Map((records||[]).map(x=>[cleanTicker(x?.ticker),x]));
   const users=usersMap||await getUsers();
   const user=users[String(email).toLowerCase()];
   for(const [ticker,a] of Object.entries(settings)){
     if(!a?.enabled)continue;
     const row=byTicker.get(ticker); if(!row)continue;
-    // extendedPrice is the single canonical alert price. Never fall back to a
-    // closing/current alias here, because that can fire an extended-hours alert
-    // against yesterday's close.
-    const price=Number(row.extendedPrice), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
+    const price=Number(row.extendedPrice);
+    const change=Number(row.changePct);
+    const short=Number(row.shortShares);
+    const rsi=Number(row.rsi);
     const checks=[];
     if(a.drop?.enabled){
       const hit=a.drop.mode==='price'
@@ -231,58 +227,59 @@ export async function evaluateUserAlerts(email,records,usersMap=null){
     if(a.short?.enabled)checks.push(['short',Number.isFinite(short)&&short<=Number(a.short.value),`الشورت ${short.toLocaleString()}`]);
     if(a.rsi?.enabled){
       const v=Number(a.rsi.value),hit=a.rsi.direction==='above'?(Number.isFinite(rsi)&&rsi>=v):(Number.isFinite(rsi)&&rsi<=v);
-      checks.push(['rsi',hit,`RSI ${rsi.toFixed(1)}`]);
+      checks.push(['rsi',hit,Number.isFinite(rsi)?`RSI ${rsi.toFixed(1)}`:'RSI غير متاح']);
     }
     for(const [type,hit,detail] of checks){
-      const sk=`${ticker}:${type}`; const prev=nextState[sk]||{};
+      const sk=`${ticker}:${type}`;
+      const prev=nextState[sk]||{};
+      // If delivery succeeded in an earlier sweep but the active-alert deletion
+      // was interrupted, finish the deletion now without sending a duplicate.
+      if(prev.hit&&!prev.consumed){
+        try{
+          const consumed=await consumeAlertType(email,ticker,type);
+          if(consumed){nextState[sk]={...prev,hit:true,consumed:true,pending:false,updatedAt:new Date().toISOString()};changed=true;}
+        }catch(e){console.warn('[alerts] pending consume retry failed',ticker,type,e?.message||e);}
+        continue;
+      }
       const was=Boolean(prev.hit);
       if(hit&&!was){
-        // A short-lived pending marker prevents overlapping one-minute sweeps
-        // from sending the same Telegram alert twice while delivery is in flight.
-        if(prev.pending && prev.pendingAt && Date.now()-new Date(prev.pendingAt).getTime()<45000)continue;
-        nextState[sk]={...prev,pending:true,pendingAt:new Date().toISOString()};
-        changed=true;
+        if(prev.pending&&prev.pendingAt&&Date.now()-new Date(prev.pendingAt).getTime()<45000)continue;
         const title=`تنبيه ${ticker}`; const message=`${ticker}: ${detail}`;
         const telegramLinked=Boolean(user?.telegramChatId);
         let delivered=!telegramLinked;
         if(telegramLinked){
           try{
-            const result=await sendTelegram(user.telegramChatId,`🔔 ${title}\n${message}`);
+            const result=await sendTelegram(user.telegramChatId,`🔔 ${title}
+${message}`);
             delivered=Boolean(result?.sent);
           }catch(e){
             delivered=false;
-            console.warn('Telegram send failed; alert remains active for retry',ticker,type,e.message);
+            console.warn('[alerts] Telegram send failed; alert stays active for retry',ticker,type,e?.message||e);
           }
         }
-        if(delivered){
-          const event={ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:telegramLinked};
-          fired.push(event);
-          // The trigger is consumed immediately after confirmed delivery: it is
-          // removed from active settings and kept in Triggered Alerts/history.
-          await appendAlertHistory(email,event).catch(e=>console.warn('alert history save failed',e.message));
-          await consumeAlertType(email,ticker,type).catch(e=>console.warn('alert consume failed',e.message));
-          nextState[sk]={hit:true,pending:false,updatedAt:new Date().toISOString()};
-        }else{
+        if(!delivered){
           nextState[sk]={hit:false,pending:false,updatedAt:new Date().toISOString()};
+          changed=true;
+          continue;
         }
-      }else if(!hit&&was){
-        nextState[sk]={hit:false,pending:false,updatedAt:new Date().toISOString()};
+        // Delivery is confirmed. Mark it consumed before the optional history mirror
+        // so a storage hiccup cannot cause Telegram to receive the same alert twice.
+        nextState[sk]={hit:true,consumed:false,pending:false,updatedAt:new Date().toISOString()};
         changed=true;
-      }else if(!hit&&prev.pending){
-        nextState[sk]={hit:false,pending:false,updatedAt:new Date().toISOString()};
+        try{
+          const consumed=await consumeAlertType(email,ticker,type);
+          if(consumed)nextState[sk]={hit:true,consumed:true,pending:false,updatedAt:new Date().toISOString()};
+        }catch(e){console.warn('[alerts] active alert consume failed; retrying without re-send',ticker,type,e?.message||e);}
+        const event={ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:telegramLinked};
+        fired.push(event);
+        await appendAlertHistory(email,event).catch(e=>console.warn('[alerts] history save failed',ticker,type,e?.message||e));
+      }else if(!hit&&was){
+        nextState[sk]={hit:false,consumed:true,pending:false,updatedAt:new Date().toISOString()};
         changed=true;
       }
     }
   }
-  if(fired.length){
-    // appendAlertHistory already persists each event. The fallback below protects
-    // against a transient write failure without changing the consume semantics.
-    const current=await storeGet(keyFor(email,'history'),[])||[];
-    const known=new Set((current||[]).map(x=>`${x?.ticker}:${x?.type}:${x?.createdAt}`));
-    const missing=fired.filter(x=>!known.has(`${x.ticker}:${x.type}:${x.createdAt}`));
-    if(missing.length)await storeSetJSON(keyFor(email,'history'),[...missing,...current].slice(0,100)).catch(()=>{});
-  }
-  if(changed)await storeSetJSON(keyFor(email,'state'),nextState).catch(()=>{});
+  if(changed)await storeSetJSON(keyFor(email,'state'),nextState).catch(e=>console.warn('[alerts] state save failed',e?.message||e));
   return {fired};
 }
 export async function runAlertSweep(){
@@ -308,9 +305,9 @@ export async function runAlertSweep(){
     const allTickers=Array.from(new Set([...liveMap.keys(),...massiveMap.keys(),...cacheMap.keys()]));
     const records=allTickers.map(t=>{
       const c=liveMap.get(t)||{},m=massiveMap.get(t)||{},base=cacheMap.get(t)||{},ind=m.indicators||base.indicators||{};
-      const extendedPrice=Number.isFinite(Number(c.extendedPrice))?Number(c.extendedPrice):
-        (Number.isFinite(Number(m.extendedPrice))?Number(m.extendedPrice):
-        (Number.isFinite(Number(base.extendedPrice))?Number(base.extendedPrice):null));
+      const extendedPrice=Number.isFinite(Number(c.extendedPrice))&&Number(c.extendedPrice)>0?Number(c.extendedPrice):
+        (Number.isFinite(Number(m.extendedPrice))&&Number(m.extendedPrice)>0?Number(m.extendedPrice):
+        (Number.isFinite(Number(base.extendedPrice))&&Number(base.extendedPrice)>0?Number(base.extendedPrice):null));
       return {...base,...m,...c,ticker:t,
         extendedPrice,
         price:extendedPrice,

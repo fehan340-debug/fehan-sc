@@ -63,13 +63,20 @@ function choosePrice(x,session,now){
 }
 async function snapshot(tickers){
   const key=String(process.env.MASSIVE_API_KEY||'').trim();if(!key)throw new Error('MASSIVE_API_KEY is not configured.');
-  const list=[...new Set(tickers.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))];if(!list.length)return {tickers:[]};
-  const url=`${BASE}/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true&tickers=${encodeURIComponent(list.join(','))}`;
+  const wanted=new Set((tickers||[]).map(x=>String(x||'').trim().toUpperCase()).filter(Boolean));
+  if(!wanted.size)return {tickers:[]};
+  // One true bulk request. Do not put the entire universe in the query string:
+  // a long ticker list can exceed proxy/URL limits and silently drop symbols.
+  const url=`${BASE}/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true`;
   let last='';
   for(let i=0;i<4;i++){
     try{
       const r=await fetch(`${url}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:'application/json'}});const text=await r.text();let d={};try{d=text?JSON.parse(text):{};}catch{}
-      if(r.ok)return d;last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
+      if(r.ok){
+        const rows=Array.isArray(d?.tickers)?d.tickers.filter(x=>wanted.has(String(x?.ticker||'').toUpperCase())):[];
+        return {...d,tickers:rows};
+      }
+      last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
       if((r.status===429||r.status>=500)&&i<3){await sleep(700*(i+1));continue;}throw new Error(last);
     }catch(e){if(i>=3)throw e;if(String(e?.message||'').startsWith('Massive HTTP'))throw e;last=String(e?.message||e);await sleep(700*(i+1));}
   }
@@ -110,16 +117,21 @@ async function main(){
   await store.setJSON('scanner-current-price-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
   await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
 
-  const prepared=await runHourlyBuild({manual:true,force:true,snapOverride:snapMap,deferPublish:true});
+  let prepared=null;
+  try{
+    prepared=await runHourlyBuild({manual:true,force:true,snapOverride:snapMap,deferPublish:true});
+  }catch(e){
+    console.error('[massive-pipeline] technical build failed; current bulk prices and alerts remain available.',e);
+  }
 
   await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:new Date().toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null,technicalPreparedAt:prepared?.preparedAt||null,publication:publication?.publishedAt||null});
   await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:now.toISOString(),massive_updated_at:now.toISOString(),massive_session:session,technical_prepared_at:prepared?.preparedAt||null,technical_publication_at:publication?.publishedAt||null});
-console.log('[worker] Starting alert sweep...');
-    try {
-        const alertResult = await runAlertSweep();
-        console.log('[worker] Alert sweep finished with result:', alertResult);
-    } catch (err) {
-        console.error('[worker] Alert sweep crashed:', err);
-    }
+  console.log('[worker] Starting alert sweep...');
+  try {
+    const alertResult = await runAlertSweep();
+    console.log('[worker] Alert sweep finished with result:', alertResult);
+  } catch (err) {
+    console.error('[worker] Alert sweep crashed:', err);
+  }
 }
   main().catch(async e=>{console.error(e);await store.setJSON('scanner-current-price-status',{state:'error',updatedAt:new Date().toISOString(),error:String(e?.message||e)}).catch(()=>{});process.exitCode=1;});
