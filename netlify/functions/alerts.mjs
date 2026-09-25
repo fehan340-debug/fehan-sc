@@ -218,10 +218,17 @@ export async function evaluateUserAlerts(email,records,usersMap=null){
   for(const [ticker,a] of Object.entries(settings)){
     if(!a?.enabled)continue;
     const row=byTicker.get(ticker); if(!row)continue;
-    const price=Number(row.extendedPrice);
-    const change=Number(row.changePct);
-    const short=Number(row.shortShares);
-    const rsi=Number(row.rsi);
+    // Treat missing numeric fields as unavailable, not as zero.
+    // Number(null) === 0 would otherwise make a missing after-hours quote
+    // fire a price alert with "$0.00".
+    const rawPrice=Number(row?.extendedPrice);
+    const price=Number.isFinite(rawPrice)&&rawPrice>0?rawPrice:NaN;
+    const rawChange=Number(row?.changePct);
+    const change=Number.isFinite(rawChange)?rawChange:NaN;
+    const rawShort=Number(row?.shortShares);
+    const short=Number.isFinite(rawShort)&&rawShort>=0?rawShort:NaN;
+    const rawRsi=Number(row?.rsi);
+    const rsi=Number.isFinite(rawRsi)?rawRsi:NaN;
     const checks=[];
     if(a.drop?.enabled){
       const hit=a.drop.mode==='price'
@@ -310,9 +317,19 @@ export async function runAlertSweep(){
     const allTickers=Array.from(new Set([...liveMap.keys(),...massiveMap.keys(),...cacheMap.keys()]));
     const records=allTickers.map(t=>{
       const c=liveMap.get(t)||{},m=massiveMap.get(t)||{},base=cacheMap.get(t)||{},ind=m.indicators||base.indicators||{};
-      const extendedPrice=Number.isFinite(Number(c.extendedPrice))&&Number(c.extendedPrice)>0?Number(c.extendedPrice):
-        (Number.isFinite(Number(m.extendedPrice))&&Number(m.extendedPrice)>0?Number(m.extendedPrice):
-        (Number.isFinite(Number(base.extendedPrice))&&Number(base.extendedPrice)>0?Number(base.extendedPrice):null));
+      // Price alerts must use ONLY the live five-minute price lane.
+      // Never fall back to the daily technical cache: that cache may contain
+      // the previous regular close (or a zero placeholder), which is not the
+      // current pre/regular/after-hours price.
+      const liveCandidates=[c,m];
+      let extendedPrice=null;
+      for(const live of liveCandidates){
+        const p=Number(live?.extendedPrice);
+        if(Number.isFinite(p)&&p>0){extendedPrice=p;break;}
+        const sessionPrice=String(live?.priceSession||'');
+        const ep=sessionPrice==='after'?Number(live?.afterHours):sessionPrice==='pre'?Number(live?.preMarket):null;
+        if(Number.isFinite(ep)&&ep>0){extendedPrice=ep;break;}
+      }
       return {...base,...m,...c,ticker:t,
         extendedPrice,
         price:extendedPrice,
@@ -321,7 +338,11 @@ export async function runAlertSweep(){
         changePct:c.changePct??m.changePct??base.changePct??base.changePercent,
         shortShares:c.shortShares??m.shortShares??base.shortShares,
         rsi:Number.isFinite(Number(c.rsi))?Number(c.rsi):(Number.isFinite(Number(m.rsi))?Number(m.rsi):(Number.isFinite(Number(ind.rsi))?Number(ind.rsi):base.rsi))};
-    }).filter(x=>Number.isFinite(Number(x.extendedPrice))||Number.isFinite(Number(x.shortShares))||Number.isFinite(Number(x.rsi)));
+    }).filter(x=>
+      (Number.isFinite(Number(x.extendedPrice))&&Number(x.extendedPrice)>0) ||
+      (Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)>=0) ||
+      Number.isFinite(Number(x.rsi))
+    );
     if(!records.length)return {ok:true,users:0,fired:0,reason:'no-market-data'};
     let fired=0,usersChecked=0;
     const emails=Object.keys(users);
