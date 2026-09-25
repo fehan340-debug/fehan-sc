@@ -1,5 +1,5 @@
 import { store } from './store.mjs';
-import { runHourlyBuild, publishPreparedTechnical } from '../netlify/functions/scanner-hourly-core.mjs';
+import { runHourlyBuild } from '../netlify/functions/scanner-hourly-core.mjs';
 import { runAlertSweep } from '../netlify/functions/alerts.mjs';
 const BASE='https://api.massive.com';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -123,12 +123,10 @@ async function main(){
   if(!(await automaticUpdatesEnabled())){console.log(JSON.stringify({ok:true,skipped:true,reason:"automatic-updates-disabled"}));return;}
 
   // Pipeline contract:
-  // 1) At :00/:05/:10/... publish the completed technical+price snapshot
-  //    prepared by the previous cycle.
-  // 2) Only after that publication, fetch a fresh Massive snapshot and build
-  //    the next technical snapshot for the following five-minute publication.
-  const publication=await publishPreparedTechnical().catch(e=>({ok:false,error:String(e?.message||e)}));
-  if(publication?.error)console.warn('[massive-pipeline] previous prepared publication failed; building the next snapshot anyway.',publication.error);
+  // 1) Every five minutes: fetch/publish only the live/extended price snapshot.
+  // 2) Technical indicators use daily data and are rebuilt exactly once per
+  //    trading day during After-Hours, starting at 16:00 ET.
+  //    The technical cache remains unchanged for the rest of that day.
 
   const now=new Date(),session=marketSession(now);
   const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'});
@@ -157,23 +155,43 @@ async function main(){
   }
   const snapMap=new Map(Object.entries(map));
 
-  // Publish the fresh bulk price lane immediately. The heavier technical lane
-  // may reuse the existing daily technical snapshot or rebuild it once when
-  // the technical day/universe changes. This keeps alerts and the UI live even
-  // if the historical technical build takes longer.
+  // Publish the fresh bulk price lane immediately. The technical lane is separate
+  // and is only rebuilt once during After-Hours, so live prices/alerts stay independent.
   await store.setJSON('scanner-massive-current-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length});
   await store.setJSON('scanner-current-price-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
   await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length,error:null});
 
-  let prepared=null;
-  try{
-    prepared=await runHourlyBuild({manual:true,force:true,snapOverride:snapMap,deferPublish:true});
-  }catch(e){
-    console.error('[massive-pipeline] technical build failed; current bulk prices and alerts remain available.',e);
+  // Technical indicators are intentionally NOT rebuilt on the five-minute lane.
+  // Build the daily technical snapshot once during After-Hours and keep it stable
+  // until the next trading day. The marker prevents duplicate builds if GitHub
+  // runs more than once during the After-Hours window.
+  let technicalBuild=null;
+  const et=etParts(now);
+  const etDate=`${et.year}-${et.month}-${et.day}`;
+  const etMinutes=Number(et.hour)*60+Number(et.minute);
+  const afterStart=etMinutes>=960 && etMinutes<1200;
+  const technicalMarker=await store.get('scanner-technical-daily-marker-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+  const needsDailyTechnical=afterStart && technicalMarker?.date!==etDate;
+
+  if(needsDailyTechnical){
+    try{
+      technicalBuild=await runHourlyBuild({manual:true,force:true,snapOverride:snapMap});
+      if(technicalBuild?.ok!==false){
+        await store.setJSON('scanner-technical-daily-marker-v1',{
+          date:etDate,
+          updatedAt:new Date().toISOString(),
+          technicalUpdatedAt:technicalBuild?.publishedAt||new Date().toISOString(),
+          records:technicalBuild?.records||0
+        });
+      }
+    }catch(e){
+      console.error('[massive-pipeline] daily technical build failed; live five-minute prices remain available.',e);
+    }
   }
 
-  await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:new Date().toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null,technicalPreparedAt:prepared?.preparedAt||null,publication:publication?.publishedAt||null});
-  await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:now.toISOString(),massive_updated_at:now.toISOString(),massive_session:session,technical_prepared_at:prepared?.preparedAt||null,technical_publication_at:publication?.publishedAt||null});
+  const finishedAt=new Date().toISOString();
+  await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt,updatedAt:finishedAt,session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null,technicalBuildAt:technicalBuild?.publishedAt||technicalBuild?.preparedAt||null,technicalUpdatedToday:Boolean(technicalBuild)});
+  await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:finishedAt,massive_updated_at:finishedAt,massive_session:session,technical_updated_at:technicalBuild?.publishedAt||undefined,technical_build_today:Boolean(technicalBuild)});
   console.log('[worker] Starting alert sweep...');
   try {
     const alertResult = await runAlertSweep();
