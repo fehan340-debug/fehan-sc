@@ -2,9 +2,8 @@ name: Massive Market Data Update
 
 on:
   schedule:
-    # Every five minutes. Each run first publishes the prepared snapshot from the previous run,
-    # then bulk-fetches extended prices. Technical values are reused from the daily snapshot
-    # until the technical day or Stock Split universe changes, avoiding per-ticker indicator calls.
+    # Every five minutes for live/extended prices only. Daily technical indicators
+    # are rebuilt once at the beginning of After-Hours (16:00 ET) by the worker.
     - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
