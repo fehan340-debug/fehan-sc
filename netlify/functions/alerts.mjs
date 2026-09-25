@@ -111,19 +111,16 @@ async function readAlerts(email){
 async function upsertAlert(email,a){
   const all=await storeGet(keyFor(email,'settings'),{})||{};
   const existing=all[a.ticker]||{};
-  const merged={
-    ...existing,
-    ...a,
-    drop:a.drop?.enabled?{...a.drop}:undefined,
-    short:a.short?.enabled?{...a.short}:undefined,
-    rsi:a.rsi?.enabled?{...a.rsi}:undefined,
-    enabled:Boolean(a.enabled)
-  };
-  if(!merged.drop?.enabled)delete merged.drop;
-  if(!merged.short?.enabled)delete merged.short;
-  if(!merged.rsi?.enabled)delete merged.rsi;
-  all[a.ticker]=merged;
-  if(!merged.enabled||(!merged.drop&&!merged.short&&!merged.rsi))delete all[a.ticker];
+  // A ticker owns one settings object, but each alert type inside it is
+  // independent. Updating one type must never erase the other two.
+  const merged={...existing,ticker:a.ticker,splitDate:a.splitDate||existing.splitDate||'',enabled:true};
+  for(const type of ['drop','short','rsi']){
+    const incoming=a[type];
+    if(incoming?.enabled){merged[type]={...incoming,enabled:true};}
+    else delete merged[type];
+  }
+  if(!merged.drop&&!merged.short&&!merged.rsi)delete all[a.ticker];
+  else all[a.ticker]=merged;
   await storeSetJSON(keyFor(email,'settings'),all);
   // The Data Store write above is the synchronous source of truth. Supabase is only a mirror.
   const row=all[a.ticker];

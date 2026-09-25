@@ -35,20 +35,32 @@ function tradeSession(ts,now=new Date()){
 }
 async function getSnapshot(tickers){
   const key=KEY(); if(!key) throw new Error("MASSIVE_API_KEY is not configured.");
-  const list=[...new Set(tickers.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))];
-  if(!list.length)return {tickers:[]};
-  const path=`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true&tickers=${encodeURIComponent(list.join(','))}`;
-  let last='';
-  for(let i=0;i<4;i++){
-    const r=await fetch(`${BASE}${path}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:"application/json"}});
-    const text=await r.text(); let d={}; try{d=text?JSON.parse(text):{};}catch{}
-    if(r.ok)return d;
-    last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
-    if((r.status===429||r.status>=500)&&i<3){await sleep(500*(i+1));continue;}
-    throw new Error(last);
+  const wanted=[...new Set(tickers.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))];
+  if(!wanted.length)return {tickers:[]};
+  const CHUNK=60, merged=new Map();
+  const base=`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true`;
+  for(let start=0;start<wanted.length;start+=CHUNK){
+    const chunk=wanted.slice(start,start+CHUNK);
+    const path=`${base}&tickers=${encodeURIComponent(chunk.join(','))}`;
+    let last='';
+    for(let i=0;i<4;i++){
+      const r=await fetch(`${BASE}${path}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:"application/json"}});
+      const text=await r.text(); let d={}; try{d=text?JSON.parse(text):{};}catch{}
+      if(r.ok){
+        for(const row of Array.isArray(d?.tickers)?d.tickers:[]){
+          const t=String(row?.ticker||'').toUpperCase();
+          if(t&&chunk.includes(t))merged.set(t,row);
+        }
+        break;
+      }
+      last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
+      if((r.status===429||r.status>=500)&&i<3){await sleep(500*(i+1));continue;}
+      throw new Error(last);
+    }
   }
-  throw new Error(last||'Massive snapshot failed.');
+  return {tickers:[...merged.values()]};
 }
+
 function choosePrice(x,session,now){
   const prevClose=Number(x?.prevDay?.c);
   const dayClose=Number(x?.day?.c);
@@ -99,9 +111,18 @@ export async function runMassiveCurrentUpdate(){
     const now=new Date(), session=marketSession(now), snap=await getSnapshot(tickers), map={};
     for(const x of snap.tickers||[]){
       const t=String(x?.ticker||'').toUpperCase(); if(!t)continue;
-      const row=choosePrice(x,session,now); if(row)map[t]={...row,updatedAt:now.toISOString()};
+      const row=choosePrice(x,session,now); if(row)map[t]={...row,updatedAt:now.toISOString(),quoteState:'fresh'};
     }
-    const payload={version:2,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length};
+    const previous=await store.get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+    const previousRecords=previous?.records&&typeof previous.records==='object'?previous.records:{};
+    for(const t of tickers){
+      if(map[t])continue;
+      const old=previousRecords[t], oldPrice=Number(old?.extendedPrice);
+      if(Number.isFinite(oldPrice)&&oldPrice>0&&String(old?.priceSession||'')===session){
+        map[t]={...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
+      }
+    }
+    const payload={version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length};
     await store.setJSON('scanner-massive-current-v1',payload);
     await store.setJSON('scanner-current-price-v1',payload);
     await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});

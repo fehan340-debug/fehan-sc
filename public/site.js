@@ -186,8 +186,30 @@ async function loadScannerCache(options={}){
     const r=await apiFetch('/.netlify/functions/scanner-cache');
     const d=await responseJSON(r);
     if(!r.ok)throw Error(d.error||'تعذر تحميل بيانات الباحث.');
-    if(d.ready){const incoming=Array.isArray(d.records)?d.records:[];if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=incoming.map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerIpoUpdatedAt=d.ipoUpdatedAt||scannerIpoUpdatedAt;scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();}return {...d,records:scannerCache||[]};}
-    scannerCache=[];scannerCacheUpdatedAt=null;
+    if(d.ready){
+      const incoming=Array.isArray(d.records)?d.records:[];
+      if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){
+        const oldMap=new Map((Array.isArray(scannerCache)?scannerCache:[]).map(x=>[`${String(x?.ticker||'').toUpperCase()}|${x?.splitDate||''}`,x]));
+        scannerCache=incoming.map(x=>{
+          const old=oldMap.get(`${String(x?.ticker||'').toUpperCase()}|${x?.splitDate||''}`)||oldMap.get(`${String(x?.ticker||'').toUpperCase()}|`);
+          const merged={...old,...x};
+          // A newly published technical snapshot is allowed to omit a live
+          // quote. Preserve the last visible quote until scanner-current
+          // publishes the next fresh five-minute value.
+          for(const k of ['extendedPrice','current','currentPrice','preMarketPrice','afterHoursPrice','priceSession','priceSource','currentUpdatedAt','changePct']){
+            if(merged[k]==null && old?.[k]!=null)merged[k]=old[k];
+          }
+          merged.freeFloat=Number.isFinite(Number(merged?.freeFloat))?Number(merged.freeFloat):(Number.isFinite(Number(merged?.free_float))?Number(merged.free_float):null);
+          merged.free_float=merged.freeFloat;
+          return merged;
+        });
+        scannerIPOs=Array.isArray(d.ipos)?d.ipos:scannerIPOs;scannerIpoUpdatedAt=d.ipoUpdatedAt||scannerIpoUpdatedAt;scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();
+      }
+      return {...d,records:scannerCache||[]};
+    }
+    // Never blank a working client cache just because a background refresh is
+    // temporarily building. Keep the last published data on screen.
+    if(!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=[];scannerCacheUpdatedAt=null;}
     if(!triggered){
       triggered=true;
       // The cache endpoint starts the protected background build server-side.
@@ -216,7 +238,7 @@ let cacheRefreshBusy=false;
 async function refreshScannerCacheInBackground(){
   if(cacheRefreshBusy||document.hidden)return;
   cacheRefreshBusy=true;
-  try{await loadScannerCache({force:true,maxAttempts:2});renderFavorites();}catch{}finally{cacheRefreshBusy=false;}
+  try{await loadScannerCache({force:true,maxAttempts:2});if($('sec-favorites')?.classList.contains('active'))refreshFavoriteCellsInPlace();}catch{}finally{cacheRefreshBusy=false;}
 }
 setInterval(refreshScannerCacheInBackground,120000);
 
@@ -359,13 +381,20 @@ function normalizeLivePrice(live){
   return Number.isFinite(sameSnapshot)&&sameSnapshot>0?sameSnapshot:null;
 }
 
-let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
+let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null,currentPricesAppliedAt=null;
 async function loadCurrentPrices(){
   try{
     const r=await apiFetch('/.netlify/functions/scanner-current');
     const d=await responseJSON(r);
     if(!r.ok||!d.ok)return false;
-    currentPricesUpdatedAt=d.updatedAt||null; currentPriceSession=d.session||'closed';
+    const incomingUpdatedAt=d.updatedAt||null;
+    currentPricesUpdatedAt=incomingUpdatedAt||currentPricesUpdatedAt; currentPriceSession=d.session||currentPriceSession||'closed';
+    // Do not rewrite the DOM every polling tick. The visible price remains
+    // stable until the server publishes a new five-minute snapshot.
+    if(incomingUpdatedAt && incomingUpdatedAt===currentPricesAppliedAt){
+      updateVisibleCurrentPrices();
+      return true;
+    }
     const map=d.records||{};
     if(Array.isArray(scannerCache)){
       for(const row of scannerCache){
@@ -376,13 +405,18 @@ async function loadCurrentPrices(){
           row.extendedPrice=p;
           row.current=p;
           row.currentPrice=p;
+          row.currentQuoteState=live.quoteState||'fresh';
+          row.currentUpdatedAt=incomingUpdatedAt||row.currentUpdatedAt||null;
         }
-        row.preMarketPrice=Number.isFinite(Number(live?.preMarket))?Number(live.preMarket):row.preMarketPrice??null;
-        row.afterHoursPrice=Number.isFinite(Number(live?.afterHours))?Number(live.afterHours):row.afterHoursPrice??null;
+        if(Number.isFinite(Number(live?.preMarket)))row.preMarketPrice=Number(live.preMarket);
+        if(Number.isFinite(Number(live?.afterHours)))row.afterHoursPrice=Number(live.afterHours);
         row.priceSession=d.session||row.priceSession;
-        row.currentUpdatedAt=d.updatedAt||row.currentUpdatedAt||null;
       }
+      currentPricesAppliedAt=incomingUpdatedAt||currentPricesAppliedAt;
       updateVisibleCurrentPrices();
+      // Favorites are updated in place; never rebuild their rows during a
+      // polling cycle, which used to cause the visible dash/flicker.
+      if($('sec-favorites')?.classList.contains('active'))refreshFavoriteCellsInPlace();
     }
     return true;
   }catch(e){console.warn('[current-price] refresh failed',e?.message||e);return false;}
@@ -502,7 +536,18 @@ $("resume").onclick=()=>{if(!running||stopped)return;paused=false;$("pause").dis
 $("stop").onclick=()=>{if(!running)return;stopped=true;paused=false;if(scanAbortController)scanAbortController.abort();$("stop").disabled=true;$("pause").disabled=true;$("resume").disabled=true;$("stop").textContent="⏹ جارٍ الإيقاف...";setStatus(`جارٍ إيقاف البحث... النتائج الحالية: <b>${results}</b>.`);};
 
 async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث الأسعار…';refreshFavoriteData(false);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
-function renderFavorites(){const body=$('favoritesResults');if(!body)return;body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';for(const f of favoriteItems){const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">—</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">—</td><td class="fv-fee">—</td><td class="fv-float">—</td><td class="fv-change">—</td>`;tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);}}
+function renderFavorites(){
+  const body=$('favoritesResults');if(!body)return;
+  body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';
+  for(const f of favoriteItems){
+    const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';
+    const x=cacheFind(f)||{};
+    const price=displayPrice(x),change=Number(x?.changePct),short=Number(x?.shortShares),fee=Number(x?.borrowFee),ff=formatCompactShares(x?.freeFloat);
+    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
+    tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
+  }
+}
+
 function emaSeries(values,period){if(!Array.isArray(values)||values.length<period)return [];const k=2/(period+1);let ema=values.slice(0,period).reduce((a,b)=>a+b,0)/period;const out=[ema];for(let i=period;i<values.length;i++){ema=(values[i]-ema)*k+ema;out.push(ema);}return out;}
 function cciValue(bars,period=14){if(!Array.isArray(bars)||bars.length<period)return NaN;const tp=bars.map(b=>(Number(b.h)+Number(b.l)+Number(b.c))/3);const w=tp.slice(-period),mean=w.reduce((a,b)=>a+b,0)/period,dev=w.reduce((a,b)=>a+Math.abs(b-mean),0)/period;return dev===0?0:(tp[tp.length-1]-mean)/(0.015*dev);}
 function completedDailyBars(bars){const today=new Date().toISOString().slice(0,10);return (bars||[]).filter(b=>dateFromBar(b)&&dateFromBar(b)<today);}
@@ -581,6 +626,21 @@ async function runFavoriteDetails(f,tr){
  showDetailsLoading(f);
  try{await loadScannerCache();const x=cacheFind(f);if(!x)throw Error('بيانات هذا السهم غير موجودة في التخزين الحالي.');const dropPct=Number.isFinite(Number(x.splitOpen))&&Number.isFinite(Number(x.current))?(Number(x.splitOpen)-Number(x.current))/Number(x.splitOpen)*100:NaN;const rows=[['السهم',x.ticker],['افتتاح يوم التقسيم',Number.isFinite(Number(x.splitOpen))?'$'+fmt(x.splitOpen):'غير متاح'],['الهدف',Number.isFinite(Number(x.splitOpen))?'$'+fmt(Number(x.splitOpen)*(1-Number($('drop').value||0)/100)):'غير متاح'],['السعر الحالي',Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'غير متاح'],['نسبة الهبوط',Number.isFinite(dropPct)?fmt(dropPct)+'%':'غير متاح'],['تاريخ التقسيم',x.splitDate||'غير متاح'],['RSI (14)',Number.isFinite(Number(x.rsi))?fmt(x.rsi):'غير متاح'],['القاع',Number.isFinite(Number(x.low))?'$'+fmt(x.low):'غير متاح'],['تاريخ القاع',x.lowDate||'غير متاح'],['IBKR Available Shares',Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'غير متاح'],['IBKR Borrow Fee',Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'غير متاح'],['Free Float',formatCompactShares(x.freeFloat)==='—'?'غير متاح':formatCompactShares(x.freeFloat)]];$('detailsTitle').textContent='تفاصيل السهم — '+x.ticker;$('detailsRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');$('detailsNote').textContent='بيانات محدثة محفوظة في الموقع.';$('detailsModal').classList.add('show');}catch(e){$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر عرض التفاصيل')+'</span></div>';$("detailsNote").textContent='تعذر تحميل التفاصيل.';}finally{if(btn)btn.disabled=false;}
 }
+function refreshFavoriteCellsInPlace(){
+  if(!$('sec-favorites')?.classList.contains('active'))return;
+  for(const f of favoriteItems){
+    const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));
+    if(!tr)continue;
+    const x=cacheFind(f);if(!x)continue;
+    const price=displayPrice(x),change=Number(x.changePct),short=Number(x.shortShares),fee=Number(x.borrowFee),ff=formatCompactShares(x.freeFloat);
+    if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);
+    if(Number.isFinite(change))tr.querySelector('.fv-change').textContent=(change>=0?'+':'')+fmt(change)+'%';
+    if(Number.isFinite(short))tr.querySelector('.fv-short').textContent=short.toLocaleString();
+    if(Number.isFinite(fee))tr.querySelector('.fv-fee').textContent=fmt(fee,2)+'%';
+    if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;
+  }
+}
+
 async function refreshFavoriteData(full=false){
   if(favoriteRefreshing||!favoriteItems.length)return; favoriteRefreshing=true;
   try{
@@ -590,19 +650,9 @@ async function refreshFavoriteData(full=false){
       await loadScannerCache({force:false,maxAttempts:1});
     }
     await loadCurrentPrices();
+    refreshFavoriteCellsInPlace();
     let done=0;
-    for(const f of favoriteItems){
-      const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));
-      if(!tr)continue;
-      const x=cacheFind(f);if(!x)continue;
-      const price=displayPrice(x);
-      if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);
-      if(Number.isFinite(Number(x.changePct)))tr.querySelector('.fv-change').textContent=(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%';
-      if(Number.isFinite(Number(x.shortShares)))tr.querySelector('.fv-short').textContent=Number(x.shortShares).toLocaleString();
-      if(Number.isFinite(Number(x.borrowFee)))tr.querySelector('.fv-fee').textContent=fmt(x.borrowFee,2)+'%';
-      const ff=formatCompactShares(x.freeFloat);if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;
-      done++;
-    }
+    for(const f of favoriteItems){if(cacheFind(f))done++;}
     $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${currentPricesUpdatedAt?freshnessLabel(currentPricesUpdatedAt):cacheAgeText()}`;
     // إذا طُلب تحديث كامل، حدّث الكاش الثقيل في الخلفية فقط، ثم حدّث العرض مرة أخرى.
     if(full){

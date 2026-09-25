@@ -63,24 +63,59 @@ function choosePrice(x,session,now){
 }
 async function snapshot(tickers){
   const key=String(process.env.MASSIVE_API_KEY||'').trim();if(!key)throw new Error('MASSIVE_API_KEY is not configured.');
-  const wanted=new Set((tickers||[]).map(x=>String(x||'').trim().toUpperCase()).filter(Boolean));
-  if(!wanted.size)return {tickers:[]};
-  // One true bulk request. Do not put the entire universe in the query string:
-  // a long ticker list can exceed proxy/URL limits and silently drop symbols.
+  const wanted=[...new Set((tickers||[]).map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))];
+  if(!wanted.length)return {tickers:[]};
+  const CHUNK=60, merged=new Map();
   const url=`${BASE}/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true`;
-  let last='';
-  for(let i=0;i<4;i++){
-    try{
-      const r=await fetch(`${url}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:'application/json'}});const text=await r.text();let d={};try{d=text?JSON.parse(text):{};}catch{}
-      if(r.ok){
-        const rows=Array.isArray(d?.tickers)?d.tickers.filter(x=>wanted.has(String(x?.ticker||'').toUpperCase())):[];
-        return {...d,tickers:rows};
+  for(let start=0;start<wanted.length;start+=CHUNK){
+    const chunk=wanted.slice(start,start+CHUNK);
+    const path=`${url}&tickers=${encodeURIComponent(chunk.join(','))}`;
+    let last='';
+    for(let i=0;i<4;i++){
+      try{
+        const r=await fetch(`${path}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:'application/json'}});
+        const text=await r.text();let d={};try{d=text?JSON.parse(text):{};}catch{}
+        if(r.ok){
+          const returned=new Set();
+          for(const row of Array.isArray(d?.tickers)?d.tickers:[]){
+            const t=String(row?.ticker||'').toUpperCase();
+            if(t&&chunk.includes(t)){merged.set(t,row);returned.add(t);}
+          }
+          // Massive can occasionally omit a small subset of requested tickers
+          // from an otherwise successful bulk response. Retry only those
+          // missing tickers instead of turning them into blank prices.
+          const missing=chunk.filter(t=>!returned.has(t));
+          for(let ms=0;ms<missing.length;ms+=20){
+            const retryBatch=missing.slice(ms,ms+20);
+            for(let ri=0;ri<3;ri++){
+              try{
+                const rr=await fetch(`${url}&tickers=${encodeURIComponent(retryBatch.join(','))}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:'application/json'}});
+                const rt=await rr.text();let rd={};try{rd=rt?JSON.parse(rt):{};}catch{}
+                if(rr.ok){
+                  for(const row of Array.isArray(rd?.tickers)?rd.tickers:[]){
+                    const t=String(row?.ticker||'').toUpperCase();
+                    if(t&&retryBatch.includes(t))merged.set(t,row);
+                  }
+                  break;
+                }
+                if((rr.status===429||rr.status>=500)&&ri<2){await sleep(700*(ri+1));continue;}
+                break;
+              }catch(e){if(ri<2){await sleep(700*(ri+1));continue;}break;}
+            }
+          }
+          break;
+        }
+        last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
+        if((r.status===429||r.status>=500)&&i<3){await sleep(700*(i+1));continue;}
+        throw new Error(last);
+      }catch(e){
+        if(i>=3)throw e;
+        if(String(e?.message||'').startsWith('Massive HTTP'))throw e;
+        last=String(e?.message||e);await sleep(700*(i+1));
       }
-      last=`Massive HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
-      if((r.status===429||r.status>=500)&&i<3){await sleep(700*(i+1));continue;}throw new Error(last);
-    }catch(e){if(i>=3)throw e;if(String(e?.message||'').startsWith('Massive HTTP'))throw e;last=String(e?.message||e);await sleep(700*(i+1));}
+    }
   }
-  throw new Error(last||'Massive snapshot failed.');
+  return {tickers:[...merged.values()]};
 }
 
 
@@ -105,7 +140,20 @@ async function main(){
     const t=String(x?.ticker||'').toUpperCase();
     if(!t)continue;
     const row=choosePrice(x,session,now);
-    if(row)map[t]={...row,updatedAt:now.toISOString()};
+    if(row)map[t]={...row,updatedAt:now.toISOString(),quoteState:'fresh'};
+  }
+  // A temporary missing quote must not turn an already visible price into a
+  // dash. Keep the last known quote for the same market session until the next
+  // successful five-minute snapshot supplies a replacement.
+  const previous=await store.get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+  const previousRecords=previous?.records&&typeof previous.records==='object'?previous.records:{};
+  for(const t of tickers){
+    if(map[t])continue;
+    const old=previousRecords[t];
+    const oldPrice=Number(old?.extendedPrice);
+    if(Number.isFinite(oldPrice)&&oldPrice>0 && String(old?.priceSession||'')===session){
+      map[t]={...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
+    }
   }
   const snapMap=new Map(Object.entries(map));
 
@@ -113,9 +161,9 @@ async function main(){
   // may reuse the existing daily technical snapshot or rebuild it once when
   // the technical day/universe changes. This keeps alerts and the UI live even
   // if the historical technical build takes longer.
-  await store.setJSON('scanner-massive-current-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
+  await store.setJSON('scanner-massive-current-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length});
   await store.setJSON('scanner-current-price-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
-  await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
+  await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length,error:null});
 
   let prepared=null;
   try{

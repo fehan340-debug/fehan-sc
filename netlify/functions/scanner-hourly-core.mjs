@@ -70,33 +70,69 @@ function marketSession(){
 function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
 function tradeSession(ts,now=new Date()){const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);if(Number.isNaN(d.getTime()))return null;const a=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d),b=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);const g=o=>Object.fromEntries(o.map(x=>[x.type,x.value]));const A=g(a),B=g(b);if(A.year!==B.year||A.month!==B.month||A.day!==B.day)return null;const mins=Number(A.hour)*60+Number(A.minute);if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;}
 export async function snapshot(tickers=[]){
-  const d=await massive('/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true');
-  const wanted=new Set((tickers||[]).map(x=>String(x).toUpperCase()));
+  const wanted=[...new Set((tickers||[]).map(x=>String(x).trim().toUpperCase()).filter(Boolean))];
   const m=new Map();
+  if(!wanted.length)return m;
   const session=marketSession();
-  for(const x of d.tickers||[]){
-    const ticker=String(x?.ticker||'').toUpperCase();
-    if(!ticker||(!wanted.size||!wanted.has(ticker)))continue;
-    const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
-    const valid=v=>Number.isFinite(v)&&v>0?v:null;
-    const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
-    const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
-    let extendedPrice=null, source=null;
-    if(session==='regular'){
-      if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}
-      else if(officialClose){extendedPrice=officialClose;source='regularClose';}
-    }else if(session==='pre'){
-      if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}
-      else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}
-      else if(valid(pre)){extendedPrice=pre;source='preMarket';}
-    }else if(session==='after'){
-      if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}
-      else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}
-      else if(valid(after)){extendedPrice=after;source='afterHours';}
-    }else if(officialClose){
-      extendedPrice=officialClose;source='regularClose';
+  // Keep the request bulk-based, but do not ask Massive for the entire market in
+  // one response. Some deployments/proxies cap large snapshot responses, which
+  // caused a small tail of requested tickers to disappear. Small ticker batches
+  // keep the request count tiny while making coverage deterministic.
+  const CHUNK=60;
+  for(let start=0;start<wanted.length;start+=CHUNK){
+    const chunk=wanted.slice(start,start+CHUNK);
+    const q=encodeURIComponent(chunk.join(','));
+    const d=await massive(`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true&tickers=${q}`);
+    const returned=new Set();
+    for(const x of d.tickers||[]){
+      const ticker=String(x?.ticker||'').toUpperCase();
+      if(!ticker||!chunk.includes(ticker))continue;
+      returned.add(ticker);
+      const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
+      const valid=v=>Number.isFinite(v)&&v>0?v:null;
+      const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
+      const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
+      let extendedPrice=null, source=null;
+      if(session==='regular'){
+        if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}
+        else if(officialClose){extendedPrice=officialClose;source='regularClose';}
+      }else if(session==='pre'){
+        if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}
+        else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}
+        else if(valid(pre)){extendedPrice=pre;source='preMarket';}
+      }else if(session==='after'){
+        if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}
+        else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}
+        else if(valid(after)){extendedPrice=after;source='afterHours';}
+      }else if(officialClose){
+        extendedPrice=officialClose;source='regularClose';
+      }
+      if(extendedPrice!=null)m.set(ticker,{extendedPrice,price:extendedPrice,regularPrice:valid(day)||valid(prev)||extendedPrice,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source,changePct:Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):(Number.isFinite(prev)&&prev>0?(extendedPrice-prev)/prev*100:null)});
     }
-    if(extendedPrice!=null)m.set(ticker,{extendedPrice,price:extendedPrice,regularPrice:valid(day)||valid(prev)||extendedPrice,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source,changePct:Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):(Number.isFinite(prev)&&prev>0?(extendedPrice-prev)/prev*100:null)});
+    const missing=chunk.filter(t=>!returned.has(t));
+    for(let ms=0;ms<missing.length;ms+=20){
+      const retryBatch=missing.slice(ms,ms+20);
+      for(let ri=0;ri<3;ri++){
+        try{
+          const rd=await massive(`/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true&tickers=${encodeURIComponent(retryBatch.join(','))}`);
+          for(const x of rd.tickers||[]){
+            const ticker=String(x?.ticker||'').toUpperCase();
+            if(!retryBatch.includes(ticker))continue;
+            const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
+            const valid=v=>Number.isFinite(v)&&v>0?v:null;
+            const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
+            const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
+            let extendedPrice=null,source=null;
+            if(session==='regular'){if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}else if(officialClose){extendedPrice=officialClose;source='regularClose';}}
+            else if(session==='pre'){if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}else if(valid(pre)){extendedPrice=pre;source='preMarket';}}
+            else if(session==='after'){if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}else if(valid(after)){extendedPrice=after;source='afterHours';}}
+            else if(officialClose){extendedPrice=officialClose;source='regularClose';}
+            if(extendedPrice!=null)m.set(ticker,{extendedPrice,price:extendedPrice,regularPrice:valid(day)||valid(prev)||extendedPrice,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source,changePct:Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):(Number.isFinite(prev)&&prev>0?(extendedPrice-prev)/prev*100:null)});
+          }
+          break;
+        }catch(e){if(ri<2)await sleep(700*(ri+1));else break;}
+      }
+    }
   }
   return m;
 }
