@@ -91,11 +91,11 @@ export async function snapshot(tickers=[]){
       const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
       const valid=v=>Number.isFinite(v)&&v>0?v:null;
       const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
-      const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
+      const officialClose=session==='regular'?valid(day)||valid(prev):valid(day)||valid(prev);
       let extendedPrice=null, source=null;
       if(session==='regular'){
         if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}
-        else if(officialClose){extendedPrice=officialClose;source='regularClose';}
+        else if(minuteSession==='regular'&&valid(minute)){extendedPrice=minute;source='regular';}
       }else if(session==='pre'){
         if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}
         else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}
@@ -121,9 +121,9 @@ export async function snapshot(tickers=[]){
             const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
             const valid=v=>Number.isFinite(v)&&v>0?v:null;
             const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
-            const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
+            const officialClose=session==='regular'?valid(day)||valid(prev):valid(day)||valid(prev);
             let extendedPrice=null,source=null;
-            if(session==='regular'){if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}else if(officialClose){extendedPrice=officialClose;source='regularClose';}}
+            if(session==='regular'){if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}else if(minuteSession==='regular'&&valid(minute)){extendedPrice=minute;source='regular';}}
             else if(session==='pre'){if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}else if(valid(pre)){extendedPrice=pre;source='preMarket';}}
             else if(session==='after'){if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}else if(valid(after)){extendedPrice=after;source='afterHours';}}
             else if(officialClose){extendedPrice=officialClose;source='regularClose';}

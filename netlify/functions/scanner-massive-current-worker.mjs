@@ -64,7 +64,7 @@ async function getSnapshot(tickers){
 function choosePrice(x,session,now){
   const prevClose=Number(x?.prevDay?.c);
   const dayClose=Number(x?.day?.c);
-  const officialClose=session==='regular' ? (Number.isFinite(prevClose)&&prevClose>0?prevClose:null) : (Number.isFinite(dayClose)&&dayClose>0?dayClose:(Number.isFinite(prevClose)&&prevClose>0?prevClose:null));
+  const officialClose=session==='regular' ? (Number.isFinite(dayClose)&&dayClose>0?dayClose:(Number.isFinite(prevClose)&&prevClose>0?prevClose:null)) : (Number.isFinite(dayClose)&&dayClose>0?dayClose:(Number.isFinite(prevClose)&&prevClose>0?prevClose:null));
   const lastTrade=Number.isFinite(Number(x?.lastTrade?.p))&&Number(x.lastTrade.p)>0?Number(x.lastTrade.p):null;
   const lastTradeSess=tradeSession(x?.lastTrade?.t,now);
   const afterPrice=Number(x?.afterHours?.p);
@@ -80,7 +80,7 @@ function choosePrice(x,session,now){
   // Session-specific live price only. Never fall back to another session.
   if(session==='regular'){
     if(lastTradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
-    else if(regular!=null){price=regular;source='regularClose';}
+    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='regular'){price=minutePrice;source='regular';}
   }else if(session==='after'){
     if(lastTradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
     else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='after'){price=minutePrice;source='afterHours';}
@@ -118,7 +118,10 @@ export async function runMassiveCurrentUpdate(){
     for(const t of tickers){
       if(map[t])continue;
       const old=previousRecords[t], oldPrice=Number(old?.extendedPrice);
-      if(Number.isFinite(oldPrice)&&oldPrice>0&&String(old?.priceSession||'')===session){
+      const oldAt=old?.updatedAt?new Date(old.updatedAt):null;
+      const nowEt=etParts(now), oldEt=oldAt?etParts(oldAt):null;
+      const sameEtDate=Boolean(oldEt&&nowEt&&oldEt.year===nowEt.year&&oldEt.month===nowEt.month&&oldEt.day===nowEt.day);
+      if(Number.isFinite(oldPrice)&&oldPrice>0&&String(old?.priceSession||'')===session&&sameEtDate){
         map[t]={...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
       }
     }

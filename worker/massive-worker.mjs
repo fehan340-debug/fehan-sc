@@ -39,13 +39,13 @@ function choosePrice(x,session,now){
   const prev=finite(x?.prevDay?.c),day=finite(x?.day?.c);
   const official=session==='regular'?(prev>0?prev:null):(day>0?day:(prev>0?prev:null));
   const last=finite(x?.lastTrade?.p),lastSess=tradeSession(x?.lastTrade?.t,now),minute=finite(x?.min?.c),minuteSess=tradeSession(x?.min?.t,now),pre=finite(x?.preMarket?.p),after=finite(x?.afterHours?.p);
-  const regular=official>0?official:(day>0?day:prev>0?prev:null);let price=null,source=null;
+  const regular=day>0?day:(prev>0?prev:null);let price=null,source=null;
   // Session-specific live price: never substitute a different session's price.
   // In pre/after hours, use the newest trade/minute print from that same session,
   // then Massive's current extended-hours field for that session.
   if(session==='regular'){
     if(last>0&&lastSess==='regular'){price=last;source='regular';}
-    else if(regular>0){price=regular;source='regularClose';}
+    else if(minute>0&&minuteSess==='regular'){price=minute;source='regular';}
   }else if(session==='after'){
     if(last>0&&lastSess==='after'){price=last;source='afterHours';}
     else if(minute>0&&minuteSess==='after'){price=minute;source='afterHours';}
@@ -149,7 +149,9 @@ async function main(){
     if(map[t])continue;
     const old=previousRecords[t];
     const oldPrice=Number(old?.extendedPrice);
-    if(Number.isFinite(oldPrice)&&oldPrice>0 && String(old?.priceSession||'')===session){
+    const oldAt=old?.updatedAt?new Date(old.updatedAt):null;
+    const sameEtDate=oldAt&&etParts(oldAt).year===etParts(now).year&&etParts(oldAt).month===etParts(now).month&&etParts(oldAt).day===etParts(now).day;
+    if(Number.isFinite(oldPrice)&&oldPrice>0 && String(old?.priceSession||'')===session && sameEtDate){
       map[t]={...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
     }
   }
