@@ -145,6 +145,36 @@ async function deleteAlert(email,ticker){
   return true;
 }
 
+async function consumeAlertType(email,ticker,type){
+  const all=await storeGet(keyFor(email,'settings'),{})||{};
+  const a=all[ticker];
+  if(!a)return false;
+  const next={...a};
+  if(type==='drop')delete next.drop;
+  else if(type==='short')delete next.short;
+  else if(type==='rsi')delete next.rsi;
+  else return false;
+  const stillHas=Boolean(next.drop?.enabled||next.short?.enabled||next.rsi?.enabled);
+  if(stillHas){
+    all[ticker]={...next,enabled:true};
+  }else{
+    delete all[ticker];
+  }
+  await storeSetJSON(keyFor(email,'settings'),all);
+  // Mirror the remaining alert configuration in Supabase. This is deliberately
+  // best-effort because the Data Store is the fast source of truth for alerts.
+  try{
+    if(stillHas){
+      const normalized=cleanAlert({...next,ticker,enabled:true});
+      await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
+      await supabaseTable('user_alerts',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(alertObjectToRow(email,normalized))});
+    }else{
+      await supabaseTable(`user_alerts?user_email=eq.${encodeURIComponent(String(email).toLowerCase())}&ticker=eq.${encodeURIComponent(ticker)}`,{method:'DELETE'});
+    }
+  }catch(e){console.warn('[alerts] triggered alert mirror update failed',e?.message||e);}
+  return true;
+}
+
 async function appendAlertHistory(email,event){
   const history=await storeGet(keyFor(email,'history'),[])||[];
   const next=[event,...history].slice(0,100);
@@ -176,23 +206,43 @@ async function deleteAlertHistory(email,event){
   const r=await supabaseTable(q,{method:'DELETE'}); if(!r.available)console.warn('[alerts] history delete mirror failed',r.status||'',r.error||'');
   return next;
 }
-export async function evaluateUserAlerts(email,records){
-  const settings=await readAlerts(email); const state=await storeGet(keyFor(email,'state'),{})||{};
+export async function evaluateUserAlerts(email,records,usersMap=null){
+  const settings=await readAlerts(email);
+  const state=await storeGet(keyFor(email,'state'),{})||{};
   const history=await storeGet(keyFor(email,'history'),[])||[];
   const nextState={...state}; let changed=false, fired=[];
   const byTicker=new Map((records||[]).map(x=>[cleanTicker(x?.ticker),x]));
+  const users=usersMap||await getUsers();
+  const user=users[String(email).toLowerCase()];
   for(const [ticker,a] of Object.entries(settings)){
-    if(!a?.enabled) continue; const row=byTicker.get(ticker); if(!row) continue;
-    const price=Number(row.price??row.currentPrice??row.current??row.extendedPrice??row.close??0), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
+    if(!a?.enabled)continue;
+    const row=byTicker.get(ticker); if(!row)continue;
+    // extendedPrice is the single canonical alert price. Never fall back to a
+    // closing/current alias here, because that can fire an extended-hours alert
+    // against yesterday's close.
+    const price=Number(row.extendedPrice), change=Number(row.changePct), short=Number(row.shortShares), rsi=Number(row.rsi);
     const checks=[];
-    if(a.drop?.enabled){ const hit=a.drop.mode==='price' ? (Number.isFinite(price)&&price<=Number(a.drop.value)) : (Number.isFinite(change)&&change<=-Math.abs(Number(a.drop.value))); checks.push(['drop',hit,a.drop.mode==='price'?`وصل السعر إلى $${price.toFixed(2)}`:`هبوط ${Math.abs(change).toFixed(2)}%`]); }
-    if(a.short?.enabled) checks.push(['short',Number.isFinite(short)&&short<=Number(a.short.value),`الشورت ${short.toLocaleString()}`]);
-    if(a.rsi?.enabled){ const v=Number(a.rsi.value), hit=a.rsi.direction==='above'?(Number.isFinite(rsi)&&rsi>=v):(Number.isFinite(rsi)&&rsi<=v); checks.push(['rsi',hit,`RSI ${rsi.toFixed(1)}`]); }
+    if(a.drop?.enabled){
+      const hit=a.drop.mode==='price'
+        ? (Number.isFinite(price)&&price<=Number(a.drop.value))
+        : (Number.isFinite(change)&&change<=-Math.abs(Number(a.drop.value)));
+      checks.push(['drop',hit,a.drop.mode==='price'?`وصل السعر إلى $${price.toFixed(2)}`:`هبوط ${Math.abs(change).toFixed(2)}%`]);
+    }
+    if(a.short?.enabled)checks.push(['short',Number.isFinite(short)&&short<=Number(a.short.value),`الشورت ${short.toLocaleString()}`]);
+    if(a.rsi?.enabled){
+      const v=Number(a.rsi.value),hit=a.rsi.direction==='above'?(Number.isFinite(rsi)&&rsi>=v):(Number.isFinite(rsi)&&rsi<=v);
+      checks.push(['rsi',hit,`RSI ${rsi.toFixed(1)}`]);
+    }
     for(const [type,hit,detail] of checks){
-      const sk=`${ticker}:${type}`; const prev=nextState[sk]||{}; const was=Boolean(prev.hit);
+      const sk=`${ticker}:${type}`; const prev=nextState[sk]||{};
+      const was=Boolean(prev.hit);
       if(hit&&!was){
+        // A short-lived pending marker prevents overlapping one-minute sweeps
+        // from sending the same Telegram alert twice while delivery is in flight.
+        if(prev.pending && prev.pendingAt && Date.now()-new Date(prev.pendingAt).getTime()<45000)continue;
+        nextState[sk]={...prev,pending:true,pendingAt:new Date().toISOString()};
+        changed=true;
         const title=`تنبيه ${ticker}`; const message=`${ticker}: ${detail}`;
-        const users=await getUsers(); const user=users[String(email).toLowerCase()];
         const telegramLinked=Boolean(user?.telegramChatId);
         let delivered=!telegramLinked;
         if(telegramLinked){
@@ -201,53 +251,98 @@ export async function evaluateUserAlerts(email,records){
             delivered=Boolean(result?.sent);
           }catch(e){
             delivered=false;
-            console.warn('Telegram send failed; alert will retry on next sweep',ticker,type,e.message);
+            console.warn('Telegram send failed; alert remains active for retry',ticker,type,e.message);
           }
         }
-        // Only record/consume the trigger after delivery is confirmed.
-        // If Telegram is linked but temporarily fails, nothing is consumed and the next sweep retries it.
         if(delivered){
-          fired.push({ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:telegramLinked});
-          nextState[sk]={hit:true,updatedAt:new Date().toISOString()};
-          changed=true;
+          const event={ticker,type,title,message,createdAt:new Date().toISOString(),telegramSent:telegramLinked};
+          fired.push(event);
+          // The trigger is consumed immediately after confirmed delivery: it is
+          // removed from active settings and kept in Triggered Alerts/history.
+          await appendAlertHistory(email,event).catch(e=>console.warn('alert history save failed',e.message));
+          await consumeAlertType(email,ticker,type).catch(e=>console.warn('alert consume failed',e.message));
+          nextState[sk]={hit:true,pending:false,updatedAt:new Date().toISOString()};
+        }else{
+          nextState[sk]={hit:false,pending:false,updatedAt:new Date().toISOString()};
         }
-      } else if(!hit&&was){
-        nextState[sk]={hit:false,updatedAt:new Date().toISOString()};
+      }else if(!hit&&was){
+        nextState[sk]={hit:false,pending:false,updatedAt:new Date().toISOString()};
+        changed=true;
+      }else if(!hit&&prev.pending){
+        nextState[sk]={hit:false,pending:false,updatedAt:new Date().toISOString()};
         changed=true;
       }
     }
   }
-  if(fired.length){let savedAny=false;for(const event of fired){const saved=await appendAlertHistory(email,event).catch(e=>{console.warn('alert history save failed',e.message);return false;});savedAny=savedAny||saved;}if(!savedAny)await storeSetJSON(keyFor(email,'history'),[...fired,...history].slice(0,100)).catch(()=>{});}
+  if(fired.length){
+    // appendAlertHistory already persists each event. The fallback below protects
+    // against a transient write failure without changing the consume semantics.
+    const current=await storeGet(keyFor(email,'history'),[])||[];
+    const known=new Set((current||[]).map(x=>`${x?.ticker}:${x?.type}:${x?.createdAt}`));
+    const missing=fired.filter(x=>!known.has(`${x.ticker}:${x.type}:${x.createdAt}`));
+    if(missing.length)await storeSetJSON(keyFor(email,'history'),[...missing,...current].slice(0,100)).catch(()=>{});
+  }
   if(changed)await storeSetJSON(keyFor(email,'state'),nextState).catch(()=>{});
   return {fired};
 }
 export async function runAlertSweep(){
-  const users=await getUsers();
-  const cache=await readPublishedCache().catch(()=>null);
-  const currentRaw=await storeGet('scanner-current-price-v1',{})||{};
-  const massiveRaw=await storeGet('scanner-massive-current-v1',{})||{};
-  const currentRecords=Array.isArray(currentRaw)?currentRaw:Object.values(currentRaw.records||currentRaw.data||currentRaw);
-  const massiveRecords=Array.isArray(massiveRaw)?massiveRaw:Object.values(massiveRaw.records||massiveRaw.data||massiveRaw);
-  const cachedRecords=Array.isArray(cache?.records)?cache.records:Object.values(cache?.records||{});
-  const liveMap=new Map(currentRecords.map(x=>[cleanTicker(x?.ticker),x]));
-  const massiveMap=new Map(massiveRecords.map(x=>[cleanTicker(x?.ticker),x]));
-  const cacheMap=new Map(cachedRecords.map(x=>[cleanTicker(x?.ticker),x]));
-  const allTickers=Array.from(new Set([...liveMap.keys(),...massiveMap.keys(),...cacheMap.keys()]));
-  const records=allTickers.map(t=>{
-    const c=liveMap.get(t)||{},m=massiveMap.get(t)||{},base=cacheMap.get(t)||{},ind=m.indicators||base.indicators||{};
-    return {...base,...m,...c,ticker:t,
-      price:c.price??c.currentPrice??m.price??m.currentPrice??base.currentPrice??base.current??base.price,
-      current:c.price??c.current??base.current,
-      currentPrice:c.price??c.currentPrice??base.currentPrice??base.current,
-      extendedPrice:c.extendedPrice??m.extendedPrice??base.extendedPrice,
-      changePct:c.changePct??m.changePct??base.changePct??base.changePercent,
-      shortShares:c.shortShares??m.shortShares??base.shortShares,
-      rsi:Number.isFinite(Number(c.rsi))?Number(c.rsi):(Number.isFinite(Number(m.rsi))?Number(m.rsi):(Number.isFinite(Number(ind.rsi))?Number(ind.rsi):base.rsi))};
-  });
-  if(!records.length)return {ok:true,users:0,fired:0,reason:'no-market-data'};
-  let fired=0, usersChecked=0;
-  for(const email of Object.keys(users)){ const a=await readAlerts(email); if(!Object.keys(a).length)continue; usersChecked++; const r=await evaluateUserAlerts(email,records); fired+=r.fired.length; }
-  return {ok:true,users:usersChecked,fired};
+  const store=getDataStore();
+  const lockKey='alerts:sweep-lock';
+  const existing=await storeGet(lockKey,null);
+  if(existing?.startedAt && Date.now()-new Date(existing.startedAt).getTime()<55000){
+    return {ok:true,skipped:true,reason:'already-running'};
+  }
+  const startedAt=new Date().toISOString();
+  await storeSetJSON(lockKey,{startedAt});
+  try{
+    const users=await getUsers();
+    const cache=await readPublishedCache().catch(()=>null);
+    const currentRaw=await storeGet('scanner-current-price-v1',{})||{};
+    const massiveRaw=await storeGet('scanner-massive-current-v1',{})||{};
+    const currentRecords=Array.isArray(currentRaw)?currentRaw:Object.values(currentRaw.records||currentRaw.data||currentRaw);
+    const massiveRecords=Array.isArray(massiveRaw)?massiveRaw:Object.values(massiveRaw.records||massiveRaw.data||massiveRaw);
+    const cachedRecords=Array.isArray(cache?.records)?cache.records:Object.values(cache?.records||{});
+    const liveMap=new Map(currentRecords.map(x=>[cleanTicker(x?.ticker),x]));
+    const massiveMap=new Map(massiveRecords.map(x=>[cleanTicker(x?.ticker),x]));
+    const cacheMap=new Map(cachedRecords.map(x=>[cleanTicker(x?.ticker),x]));
+    const allTickers=Array.from(new Set([...liveMap.keys(),...massiveMap.keys(),...cacheMap.keys()]));
+    const records=allTickers.map(t=>{
+      const c=liveMap.get(t)||{},m=massiveMap.get(t)||{},base=cacheMap.get(t)||{},ind=m.indicators||base.indicators||{};
+      const extendedPrice=Number.isFinite(Number(c.extendedPrice))?Number(c.extendedPrice):
+        (Number.isFinite(Number(m.extendedPrice))?Number(m.extendedPrice):
+        (Number.isFinite(Number(base.extendedPrice))?Number(base.extendedPrice):null));
+      return {...base,...m,...c,ticker:t,
+        extendedPrice,
+        price:extendedPrice,
+        current:extendedPrice,
+        currentPrice:extendedPrice,
+        changePct:c.changePct??m.changePct??base.changePct??base.changePercent,
+        shortShares:c.shortShares??m.shortShares??base.shortShares,
+        rsi:Number.isFinite(Number(c.rsi))?Number(c.rsi):(Number.isFinite(Number(m.rsi))?Number(m.rsi):(Number.isFinite(Number(ind.rsi))?Number(ind.rsi):base.rsi))};
+    }).filter(x=>Number.isFinite(Number(x.extendedPrice))||Number.isFinite(Number(x.shortShares))||Number.isFinite(Number(x.rsi)));
+    if(!records.length)return {ok:true,users:0,fired:0,reason:'no-market-data'};
+    let fired=0,usersChecked=0;
+    const emails=Object.keys(users);
+    let cursor=0;
+    const runUser=async()=>{
+      while(true){
+        const i=cursor++; if(i>=emails.length)return;
+        const email=emails[i];
+        try{
+          const a=await readAlerts(email); if(!Object.keys(a).length)continue;
+          usersChecked++;
+          const r=await evaluateUserAlerts(email,records,users);
+          fired+=r.fired.length;
+        }catch(e){
+          console.warn('[alerts] user sweep failed; continuing with remaining users',email,e?.message||e);
+        }
+      }
+    };
+    await Promise.all(Array.from({length:Math.min(5,emails.length)},runUser));
+    return {ok:true,users:usersChecked,fired};
+  }finally{
+    await storeDelete(lockKey).catch(()=>{});
+  }
 }
 export async function createUserTelegramLink(email){
   const users=await getUsers();
@@ -265,6 +360,10 @@ export default async function(request){
     const action=new URL(request.url).searchParams.get('action')||'settings'; const c=await currentUser(request);
     if(!c?.user||c.blocked) return json({error:'غير مصرح. سجّل الدخول.'},401);
     const email=c.user.email;
+    if(action==='clear' && request.method==='DELETE'){
+      await storeDelete(keyFor(email,'state'));
+      return json({ok:true,message:'تمت تصفير حالات التنبيهات القديمة.'});
+    }
     if(action==='settings'){
       if(request.method==='GET'){const settings=await readAlerts(email);return json({ok:true,settings,telegram:await createUserTelegramLink(email)});}
       if(request.method==='POST'){const b=await readJson(request);const a=cleanAlert(b);await upsertAlert(email,a);return json({ok:true,settings:await readAlerts(email),telegram:await createUserTelegramLink(email)});}

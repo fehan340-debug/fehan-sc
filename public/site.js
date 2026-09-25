@@ -349,31 +349,10 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-    const session = String(stock?.priceSession || "").toLowerCase();
-    
-    const pre = Number(stock?.preMarketPrice ?? stock?.pre);
-    const after = Number(stock?.afterHoursPrice ?? stock?.after);
-    const extended = Number(stock?.extendedPrice ?? stock?.extended);
-    const current = Number(stock?.currentPrice ?? stock?.current ?? stock?.price);
-    const close = Number(stock?.closePrice ?? stock?.close);
-
-    const isValid = v => Number.isFinite(v) && v > 0;
-
-    // 1. التوجيه حسب حالة الجلسة الحالية
-    if (session.includes("pre") && isValid(pre)) return pre;
-    if ((session.includes("after") || session.includes("post")) && isValid(after)) return after;
-    
-    // 2. إعطاء الأولوية المطلقة للأسعار الحية والممتدة
-    if (isValid(extended)) return extended;
-    if (isValid(current)) return current;
-    if (isValid(pre)) return pre;
-    if (isValid(after)) return after;
-    
-    // 3. الحل الأخير
-    if (isValid(close)) return close;
-    
-    return '-';
+  const extended=Number(stock?.extendedPrice);
+  return Number.isFinite(extended)&&extended>0?extended:'-';
 }
+
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
 async function loadCurrentPrices(){
   try{
@@ -386,11 +365,12 @@ async function loadCurrentPrices(){
       for(const row of scannerCache){
         const live=map[String(row?.ticker||'').toUpperCase()];
         if(!live)continue;
-row.current = live.extendedPrice ?? live.price ?? live.current;
-row.currentPrice = live.extendedPrice ?? live.price ?? live.current;
-row.preMarketPrice = live.preMarketPrice ?? live.pre ?? live.extendedPrice;
-row.afterHoursPrice = live.afterHoursPrice ?? live.after ?? live.extendedPrice;
-row.pricesSession = d.session || row.pricesSession;
+row.extendedPrice = live.extendedPrice;
+      row.current = live.extendedPrice;
+      row.currentPrice = live.extendedPrice;
+      row.preMarketPrice = live.preMarketPrice ?? live.extendedPrice;
+      row.afterHoursPrice = live.afterHoursPrice ?? live.extendedPrice;
+row.priceSession = d.session || row.priceSession;
       }
       updateVisibleCurrentPrices();
     }

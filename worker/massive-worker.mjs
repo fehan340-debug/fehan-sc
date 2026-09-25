@@ -51,14 +51,15 @@ function choosePrice(x,session,now){
     else if(minute>0&&minuteSess==='after'){price=minute;source='afterHours';}
     else if(after>0){price=after;source='afterHours';}
  }else if(session==='pre'){
-  price = last || minute || pre || regular || prev || 0;
-  source = 'preMarket';
+  if(last>0&&lastSess==='pre'){price=last;source='preMarket';}
+  else if(minute>0&&minuteSess==='pre'){price=minute;source='preMarket';}
+  else if(pre>0){price=pre;source='preMarket';}
 }else{
     if(regular>0){price=regular;source='regularClose';}
   }
   if(!(price>0))return null;
   const ch=finite(x?.todaysChangePerc);
-  return {price,regularPrice:regular,preMarket:pre>0?pre:null,afterHours:after>0?after:null,minutePrice:minute>0?minute:null,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:prev>0?prev:null,changePct:ch??(prev>0?(price-prev)/prev*100:null)};
+  return {extendedPrice:price,price,regularPrice:regular,preMarket:pre>0?pre:null,afterHours:after>0?after:null,minutePrice:minute>0?minute:null,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:prev>0?prev:null,changePct:ch??(prev>0?(price-prev)/prev*100:null)};
 }
 async function snapshot(tickers){
   const key=String(process.env.MASSIVE_API_KEY||'').trim();if(!key)throw new Error('MASSIVE_API_KEY is not configured.');
@@ -75,52 +76,6 @@ async function snapshot(tickers){
   throw new Error(last||'Massive snapshot failed.');
 }
 
-async function indicator(ticker,name,window){
-  const key=String(process.env.MASSIVE_API_KEY||'').trim();
-  if(!key)throw new Error('MASSIVE_API_KEY is not configured.');
-  const path=`/v1/indicators/${name}/${encodeURIComponent(ticker)}?timespan=day&adjusted=true&window=${window}&series_type=close&order=desc&limit=1`;
-  let last='';
-  for(let i=0;i<4;i++){
-    try{
-      const r=await fetch(`${BASE}${path}&apiKey=${encodeURIComponent(key)}`,{headers:{accept:'application/json'}});
-      const text=await r.text();let d={};try{d=text?JSON.parse(text):{};}catch{}
-      if(r.ok){
-        const v=d?.results?.values?.[0];
-        const value=finite(v?.value);
-        return value!==null?{value,timestamp:v?.timestamp||null,source:`massive-${name}`} : null;
-      }
-      last=`Massive ${name.toUpperCase()} HTTP ${r.status}: ${d.error||d.message||text.slice(0,180)}`;
-      if((r.status===429||r.status>=500)&&i<3){await sleep(700*(i+1));continue;}
-      return null;
-    }catch(e){
-      last=String(e?.message||e);
-      if(i<3){await sleep(700*(i+1));continue;}
-    }
-  }
-  console.warn(`[massive-indicator] ${ticker} ${name} failed: ${last}`);
-  return null;
-}
-
-async function fetchIndicators(tickers){
-  const out={}; let idx=0;
-  const worker=async()=>{
-    while(true){
-      const i=idx++; if(i>=tickers.length)return;
-      const t=tickers[i];
-      const names=[['rsi',14],['sma5',5],['sma20',20],['ema20',20],['ema50',50]];
-      const values=await Promise.all(names.map(([name,window])=>indicator(t,name.startsWith('sma')?'sma':name,window)));
-      const row={};
-      for(let j=0;j<names.length;j++){
-        const [name]=names[j],v=values[j];
-        if(v?.value!==null&&v?.value!==undefined)row[name]=v.value;
-        if(v?.timestamp)row[`${name}At`]=v.timestamp;
-      }
-      if(Object.keys(row).length)out[t]={...row,source:'massive-indicators',updatedAt:new Date().toISOString()};
-    }
-  };
-  await Promise.all(Array.from({length:Math.min(10,tickers.length)},worker));
-  return out;
-}
 
 async function main(){
   if(!(await automaticUpdatesEnabled())){console.log(JSON.stringify({ok:true,skipped:true,reason:"automatic-updates-disabled"}));return;}
@@ -145,23 +100,19 @@ async function main(){
     const row=choosePrice(x,session,now);
     if(row)map[t]={...row,updatedAt:now.toISOString()};
   }
-  // Server-side Massive indicators are fetched in the SAME five-minute lane
-  // as the snapshot. They are passed into the technical builder as one
-  // prepared snapshot so the customer never sees a half-updated cycle.
-  const indicators=await fetchIndicators(tickers);
-  for(const [t,ind] of Object.entries(indicators)){
-    if(map[t])map[t]={...map[t],indicators:ind};
-  }
   const snapMap=new Map(Object.entries(map));
 
-  // Technical indicators are calculated in the SAME Massive five-minute
-  // pipeline. The daily Stock Split/IPO universe is not refreshed here.
+  // Publish the fresh bulk price lane immediately. The heavier technical lane
+  // may reuse the existing daily technical snapshot or rebuild it once when
+  // the technical day/universe changes. This keeps alerts and the UI live even
+  // if the historical technical build takes longer.
+  await store.setJSON('scanner-massive-current-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
+  await store.setJSON('scanner-current-price-v1',{version:4,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
+  await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
+
   const prepared=await runHourlyBuild({manual:true,force:true,snapOverride:snapMap,deferPublish:true});
 
-  await store.setJSON('scanner-massive-current-v1',{version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,indicatorTickers:Object.keys(indicators).length,technicalPreparedAt:prepared?.preparedAt||null,nextPublication:'next-five-minute-cycle'});
-  await store.setJSON('scanner-current-price-v1',{version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length});
-  await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
-  await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:new Date().toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,indicatorTickers:Object.keys(indicators).length,error:null,technicalPreparedAt:prepared?.preparedAt||null,publication:publication?.publishedAt||null});
+  await store.setJSON('scanner-massive-current-status',{state:'ready',startedAt:now.toISOString(),finishedAt:new Date().toISOString(),updatedAt:now.toISOString(),session,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null,technicalPreparedAt:prepared?.preparedAt||null,publication:publication?.publishedAt||null});
   await store.setJSON('cache_status',{...(await store.get('cache_status')||{}),last_massive_update:now.toISOString(),updated_at:now.toISOString(),massive_updated_at:now.toISOString(),massive_session:session,technical_prepared_at:prepared?.preparedAt||null,technical_publication_at:publication?.publishedAt||null});
 console.log('[worker] Starting alert sweep...');
     try {

@@ -69,34 +69,75 @@ function marketSession(){
 }
 function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
 function tradeSession(ts,now=new Date()){const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);if(Number.isNaN(d.getTime()))return null;const a=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d),b=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);const g=o=>Object.fromEntries(o.map(x=>[x.type,x.value]));const A=g(a),B=g(b);if(A.year!==B.year||A.month!==B.month||A.day!==B.day)return null;const mins=Number(A.hour)*60+Number(A.minute);if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;}
-async function snapshotTicker(symbol){
-  const d=await massive(`/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}?extended=true`);
-  return d?.ticker||d?.results?.[0]||d;
-}
 export async function snapshot(tickers=[]){
   const d=await massive('/v2/snapshot/locale/us/markets/stocks/tickers?include_otc=false&extended=true');
+  const wanted=new Set((tickers||[]).map(x=>String(x).toUpperCase()));
   const m=new Map();
   const session=marketSession();
   for(const x of d.tickers||[]){
-    if(!x.ticker)continue;
+    const ticker=String(x?.ticker||'').toUpperCase();
+    if(!ticker||(!wanted.size||!wanted.has(ticker)))continue;
     const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
     const valid=v=>Number.isFinite(v)&&v>0?v:null;
     const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
     const officialClose=session==='regular'?valid(prev):valid(day)||valid(prev);
-    let price=null, source=null;
-    if(session==='regular'){ if(lastSession==='regular'&&valid(last)) {price=last;source='regular';} else if(officialClose) {price=officialClose;source='regularClose';} }
-    else if(session==='pre'){ if(lastSession==='pre'&&valid(last)){price=last;source='preMarket';} else if(minuteSession==='pre'&&valid(minute)){price=minute;source='preMarket';} else if(valid(pre)){price=pre;source='preMarket';} }
-    else if(session==='after'){ if(lastSession==='after'&&valid(last)){price=last;source='afterHours';} else if(minuteSession==='after'&&valid(minute)){price=minute;source='afterHours';} else if(valid(after)){price=after;source='afterHours';} }
-    if(price!=null)m.set(String(x.ticker).toUpperCase(),{price,regularPrice:valid(day)||valid(prev)||price,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source});
-  }
-  // During extended hours, verify the exact per-symbol Massive/Polygon snapshot
-  // endpoint so preMarket/afterHours is used instead of yesterday's close.
-  if((session==='pre'||session==='after')&&Array.isArray(tickers)&&tickers.length){
-    let idx=0;
-    const worker=async()=>{while(true){const i=idx++;if(i>=tickers.length)return;const t=String(tickers[i]).toUpperCase();try{const x=await snapshotTicker(t);const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c);const extended=session==='pre'?pre:after;const price=Number.isFinite(extended)&&extended>0?extended:(Number.isFinite(last)&&last>0?last:(Number.isFinite(day)&&day>0?day:null));if(price!=null)m.set(t,{price,regularPrice:Number.isFinite(day)&&day>0?day:last,preMarket:Number.isFinite(pre)&&pre>0?pre:null,afterHours:Number.isFinite(after)&&after>0?after:null,priceSession:session,priceSource:Number.isFinite(extended)&&extended>0?(session==='pre'?'preMarket':'afterHours'):'regular'});}catch(e){console.warn('[snapshot] ticker snapshot failed',{ticker:t,error:String(e?.message||e)});}}};
-    await Promise.all(Array.from({length:Math.min(8,tickers.length)},worker));
+    let extendedPrice=null, source=null;
+    if(session==='regular'){
+      if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}
+      else if(officialClose){extendedPrice=officialClose;source='regularClose';}
+    }else if(session==='pre'){
+      if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}
+      else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}
+      else if(valid(pre)){extendedPrice=pre;source='preMarket';}
+    }else if(session==='after'){
+      if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}
+      else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}
+      else if(valid(after)){extendedPrice=after;source='afterHours';}
+    }else if(officialClose){
+      extendedPrice=officialClose;source='regularClose';
+    }
+    if(extendedPrice!=null)m.set(ticker,{extendedPrice,price:extendedPrice,regularPrice:valid(day)||valid(prev)||extendedPrice,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source,changePct:Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):(Number.isFinite(prev)&&prev>0?(extendedPrice-prev)/prev*100:null)});
   }
   return m;
+}
+
+function etDayKey(date=new Date()){
+  return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(date);
+}
+
+function canReuseFiveMinuteCache(cache,universe,now=new Date()){
+  if(!cache?.ready||!Array.isArray(cache.records)||!cache.records.length)return false;
+  if(universe?.updatedAt && cache?.splitsUpdatedAt && String(universe.updatedAt)!==String(cache.splitsUpdatedAt))return false;
+  const technicalAt=cache?.technicalUpdatedAt||cache?.preparedAt||cache?.updatedAt;
+  if(!technicalAt)return false;
+  return etDayKey(new Date(technicalAt))===etDayKey(now);
+}
+
+export function prepareFiveMinuteBulkSnapshot(cache,snap,universe,session,now=new Date()){
+  if(!canReuseFiveMinuteCache(cache,universe,now))return null;
+  const liveMap=snap instanceof Map?snap:new Map();
+  const records=cache.records.map(row=>{
+    const t=String(row?.ticker||'').toUpperCase();
+    const live=liveMap.get(t);
+    const extendedPrice=Number.isFinite(Number(live?.extendedPrice))?Number(live.extendedPrice):
+      (Number.isFinite(Number(row?.extendedPrice))?Number(row.extendedPrice):null);
+    if(!Number.isFinite(extendedPrice)||extendedPrice<=0)return {...row};
+    return {...row,
+      extendedPrice,
+      price:extendedPrice,
+      current:extendedPrice,
+      currentPrice:extendedPrice,
+      preMarketPrice:Number.isFinite(Number(live?.preMarket))?Number(live.preMarket):row.preMarketPrice??null,
+      afterHoursPrice:Number.isFinite(Number(live?.afterHours))?Number(live.afterHours):row.afterHoursPrice??null,
+      priceSession:live?.priceSession||session,
+      priceSource:live?.priceSource||row.priceSource||null,
+      changePct:Number.isFinite(Number(live?.changePct))?Number(live.changePct):row.changePct,
+      currentUpdatedAt:now.toISOString(),
+      updatedAt:now.toISOString()
+    };
+  });
+  const payload={...cache,version:9,ready:true,building:false,updatedAt:now.toISOString(),massiveUpdatedAt:now.toISOString(),currentUpdatedAt:now.toISOString(),technicalUpdatedAt:cache.technicalUpdatedAt||cache.updatedAt,records,expectedRows:records.length,missingRows:0,missing:[],dataRefreshMode:'five-minute-bulk-price-overlay-with-cached-technical',sources:{...(cache.sources||{}),current:'massive-bulk-snapshot',technical:'cached-daily-technical'}};
+  return payload;
 }
 
 async function buildTicker(t,events,refs,snap,borrow){
@@ -110,14 +151,16 @@ async function buildTicker(t,events,refs,snap,borrow){
   const closes=tech.map(b=>Number(b.c));
   const calculated={rsi:rsi(closes),ma5:ma(closes,5),ma20:ma(closes,20),ema20:ema(closes,20),ema50:ema(closes,50),cci:cci(tech)};
   const massiveInd=snap.get(t)?.indicators||{};
-  const ind={rsi:Number.isFinite(Number(massiveInd.rsi))?Number(massiveInd.rsi):calculated.rsi,ma5:Number.isFinite(Number(massiveInd.sma5))?Number(massiveInd.sma5):calculated.ma5,ma20:Number.isFinite(Number(massiveInd.sma20))?Number(massiveInd.sma20):calculated.ma20,ema20:Number.isFinite(Number(massiveInd.ema20))?Number(massiveInd.ema20):calculated.ema20,ema50:Number.isFinite(Number(massiveInd.ema50))?Number(massiveInd.ema50):calculated.ema50,cci:calculated.cci,technicalSource:massiveInd.source||'massive-aggregates-fallback',technicalUpdatedAt:massiveInd.updatedAt||null};
-  const change=dailyChange(tech), snapRow=snap.get(t);
-  const snapPrice=Number(snapRow?.price);
+  const ind={rsi:Number.isFinite(Number(massiveInd.rsi))?Number(massiveInd.rsi):calculated.rsi,ma5:Number.isFinite(Number(massiveInd.sma5))?Number(massiveInd.sma5):calculated.ma5,ma20:Number.isFinite(Number(massiveInd.sma20))?Number(massiveInd.sma20):calculated.ma20,ema20:Number.isFinite(Number(massiveInd.ema20))?Number(massiveInd.ema20):calculated.ema20,ema50:Number.isFinite(Number(massiveInd.ema50))?Number(massiveInd.ema50):calculated.ema50,cci:calculated.cci,technicalSource:massiveInd.source||'massive-aggregates-local',technicalUpdatedAt:massiveInd.updatedAt||new Date().toISOString()};
+  const snapRow=snap.get(t);
+  const change=Number.isFinite(Number(snapRow?.changePct))?Number(snapRow.changePct):dailyChange(tech);
+  const snapPrice=Number(snapRow?.extendedPrice ?? snapRow?.price);
   const latestClose=Number(tech.at(-1)?.c);
-  const current=Number.isFinite(snapPrice)&&snapPrice>0?snapPrice:(Number.isFinite(latestClose)&&latestClose>0?latestClose:null);
+  const current=Number.isFinite(snapPrice)&&snapPrice>0?snapPrice:null;
   const preMarketPrice=Number.isFinite(Number(snapRow?.preMarket))&&Number(snapRow.preMarket)>0?Number(snapRow.preMarket):null;
   const afterHoursPrice=Number.isFinite(Number(snapRow?.afterHours))&&Number(snapRow.afterHours)>0?Number(snapRow.afterHours):null;
   const currentPrice=Number.isFinite(current)&&current>0?current:null;
+  const extendedPrice=currentPrice;
   const closePrice=Number.isFinite(latestClose)&&latestClose>0?latestClose:null;
   const intraday=await fourH(t,earliest,to);
   const shares=Number.isFinite(Number(borrow?.shares))?Number(borrow.shares):null, fee=Number.isFinite(Number(borrow?.fee))?Number(borrow.fee):null;
@@ -129,7 +172,7 @@ async function buildTicker(t,events,refs,snap,borrow){
     const post=tech.slice(-252);
     const range={high52:post.length?Math.max(...post.map(b=>Number(b.h)).filter(Number.isFinite)):null,low52:post.length?Math.min(...post.map(b=>Number(b.l)).filter(Number.isFinite)):null};
     const low=lowSince(tech,e.execution_date), h=fourHInfo(intraday,e.execution_date,tech);
-    rows.push({ticker:t,splitDate:e.execution_date,splitOpen,current,currentPrice,preMarketPrice,afterHoursPrice,closePrice,rsi:ind.rsi,ma5:ind.ma5,ma20:ind.ma20,ema20:ind.ema20,ema50:ind.ema50,cci:ind.cci,technicalSource:ind.technicalSource,technicalUpdatedAt:ind.technicalUpdatedAt,low:low.low,lowDate:low.lowDate,sinceLow:low.sinceLow,high52:range.high52,low52:range.low52,low4h:h.low4h,low4hDate:h.low4hDate,low4hDays:h.low4hDays,split4hHigh:h.split4hHigh,shortShares:shares,borrowFee:fee,freeFloat:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,free_float:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,shortDataState:shortState,shortDataSource:borrow?.source||null,shortDataUpdatedAt:borrow?.updatedAt||null,freeFloatSource:borrow?.freeFloat!=null?(borrow?.freeFloatSource||'finviz-scrapingant'):null,freeFloatUpdatedAt:borrow?.freeFloat!=null?(borrow?.freeFloatUpdatedAt||null):null,changePct:change,exchange:refs[t]?.exchange_name||refs[t]?.primary_exchange||null,primaryExchange:refs[t]?.primary_exchange||null,flag:flag(refs[t]),updatedAt:new Date().toISOString()});
+    rows.push({ticker:t,splitDate:e.execution_date,splitOpen,current,currentPrice,extendedPrice,preMarketPrice,afterHoursPrice,closePrice,rsi:ind.rsi,ma5:ind.ma5,ma20:ind.ma20,ema20:ind.ema20,ema50:ind.ema50,cci:ind.cci,technicalSource:ind.technicalSource,technicalUpdatedAt:ind.technicalUpdatedAt,low:low.low,lowDate:low.lowDate,sinceLow:low.sinceLow,high52:range.high52,low52:range.low52,low4h:h.low4h,low4hDate:h.low4hDate,low4hDays:h.low4hDays,split4hHigh:h.split4hHigh,shortShares:shares,borrowFee:fee,freeFloat:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,free_float:Number.isFinite(Number(borrow?.freeFloat))?Number(borrow.freeFloat):null,shortDataState:shortState,shortDataSource:borrow?.source||null,shortDataUpdatedAt:borrow?.updatedAt||null,freeFloatSource:borrow?.freeFloat!=null?(borrow?.freeFloatSource||'finviz-scrapingant'):null,freeFloatUpdatedAt:borrow?.freeFloat!=null?(borrow?.freeFloatUpdatedAt||null):null,changePct:change,exchange:refs[t]?.exchange_name||refs[t]?.primary_exchange||null,primaryExchange:refs[t]?.primary_exchange||null,flag:flag(refs[t]),updatedAt:new Date().toISOString()});
   }
   return rows;
 }
@@ -169,10 +212,21 @@ export async function runHourlyBuild({manual=false,force=true,snapOverride=null,
     if(!universe?.tickers?.length){
       universe=await getUniverse({refresh:true,maxAgeMs:0});
     }
-    // Each five-minute Massive run refreshes technical + live-price data.
+    const bulkNow=new Date();
+    const bulkSnap=snapOverride||await snapshot(universe.tickers||[]);
+    const existingPublished=await readPublishedCache().catch(()=>null);
+    const reusable=deferPublish?prepareFiveMinuteBulkSnapshot(existingPublished,bulkSnap,universe,marketSession(),bulkNow):null;
+    if(reusable){
+      await store.setJSON('scanner-technical-pending-v1',{...reusable,preparedAt:bulkNow.toISOString(),publicationPending:true});
+      await store.setJSON('scanner-hourly-refresh-v1',{version:9,state:'ready',jobId,startedAt:null,finishedAt:bulkNow.toISOString(),manual,phase:'تم تحديث الأسعار والبيانات الفنية دفعة واحدة من الكاش الفني الجاهز',totalBatches:1,completedBatches:1,totalTickers:reusable.records.length,completedTickers:reusable.records.length,failedTickers:[],error:null,publishedAt:null,preparedAt:bulkNow.toISOString(),updatedAt:bulkNow.toISOString(),universeUpdatedAt:universe.updatedAt||null,successRate:1,requiredRows:reusable.records.length,missingRows:0,publicationMode:'five-minute-bulk-price-overlay'});
+      return {ok:true,prepared:true,bulk:true,records:reusable.records.length,tickers:reusable.records.length,failed:0,preparedAt:bulkNow.toISOString()};
+    }
+    // The first cycle of a new technical day (or a changed Stock Split universe)
+    // performs the heavier historical build once. Subsequent five-minute cycles
+    // reuse that technical snapshot and only bulk-refresh prices.
     // Short and Free Float remain independent prepared snapshots and are merged
     // immediately before publication so a slow scraper never blocks Massive.
-    const snap=snapOverride||await snapshot(universe.tickers||[]);
+    const snap=bulkSnap;
     const borrow=await readBorrowCache();
     const borrowRecords=borrow.records||{};
     const floatCache=await store.get('scanner-float-data-v1',{type:'json',consistency:'strong'}).catch(()=>null);
