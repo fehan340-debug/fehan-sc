@@ -140,11 +140,44 @@ async function main(){
   //    The technical cache remains unchanged for the rest of that day.
 
   const now=new Date(),session=marketSession(now);
-  // Price cycle runs only from US pre-market through the end of after-hours.
-  // Once after-hours ends, keep the last published after-hours snapshot intact;
-  // never publish an empty/closed snapshot that would turn visible prices into dashes.
+  // Live prices run only from Pre-Market through the end of After-Hours.
+  // At the first closed cycle after After-Hours, publish the official regular
+  // market close (day.c) once, then stop all Massive fetching until the next
+  // Pre-Market. The closed snapshot is retained through weekends/holidays.
   if(session==='closed'){
-    console.log('[worker] Market closed: price cycle stopped; keeping last after-hours snapshot.');
+    const previous=await store.get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+    const prevUpdated=previous?.updatedAt?new Date(previous.updatedAt):null;
+    const prevSession=String(previous?.session||'');
+    const prevEt=prevUpdated?etParts(prevUpdated):null;
+    const closedFinalized=await store.get('scanner-current-price-closed-finalized-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+    const previousTradingDate=prevSession==='after'&&prevEt?`${prevEt.year}-${prevEt.month}-${prevEt.day}`:null;
+    if(String(closedFinalized?.tradingDate||'')===String(previousTradingDate||'')){
+      console.log('[worker] Market closed: official close already finalized; no Massive request.');
+      return;
+    }
+    if(!previousTradingDate){
+      console.log('[worker] Market closed: no fresh After-Hours snapshot to finalize; no Massive request.');
+      return;
+    }
+    const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'});
+    const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
+    if(!tickers.length)return;
+    const snap=await snapshot(tickers),map={};
+    for(const x of snap.tickers||[]){
+      const t=String(x?.ticker||'').toUpperCase(); if(!t)continue;
+      const official=finite(x?.day?.c);
+      if(Number.isFinite(official)&&official>0){
+        map[t]={ticker:t,extendedPrice:official,price:official,current:official,currentPrice:official,regularPrice:official,preMarket:finite(x?.preMarket?.p),afterHours:finite(x?.afterHours?.p),priceSession:'closed',priceSource:'officialClose',quoteState:'official-close',prevClose:finite(x?.prevDay?.c),updatedAt:now.toISOString()};
+      }
+    }
+    if(Object.keys(map).length){
+      const payload={version:5,updatedAt:now.toISOString(),session:'closed',records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length,priceSource:'officialClose'};
+      await store.setJSON('scanner-massive-current-v1',payload);
+      await store.setJSON('scanner-current-price-v1',payload);
+      await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session:'closed',requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length,error:null});
+      await store.setJSON('scanner-current-price-closed-finalized-v1',{tradingDate:previousTradingDate,updatedAt:now.toISOString(),priceSource:'officialClose'});
+      console.log(`[worker] Market closed: published official regular close for ${previousTradingDate}; future closed cycles are stopped.`);
+    }
     return;
   }
   const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'});

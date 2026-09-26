@@ -1,11 +1,15 @@
 import { getDataStore } from '../../lib.js';
 
-// Wyckoff engine v2: batch collection + batch analysis. The UI only reads cached results.
+// Wyckoff engine v3: 50-session context with heavier weight on the latest 10 sessions. The UI only reads cached results.
 const MASSIVE='https://api.massive.com';
 const HISTORY_KEY='scanner-models-wyckoff-history-v2';
 const RESULT_KEY='scanner-models-wyckoff-v2';
 const STATUS_KEY='scanner-models-wyckoff-status-v2';
-const WINDOW=100;
+const WINDOW=50;
+const CONTEXT=40;
+const RECENT=10;
+const CONTEXT_WEIGHT=.40;
+const RECENT_WEIGHT=.60;
 const CONCURRENCY=5;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const apiKey=()=>String(process.env.MASSIVE_API_KEY||'').trim();
@@ -83,19 +87,20 @@ function phaseState(bars,events){
   return {phase:'A/B',label:'Phase A/B — تكوين نطاق/تغير سلوك'};
 }
 function analyze(ticker,bars){
-  const b=bars.slice(-WINDOW);if(b.length<60)return{ticker,stage:'غير كافٍ',stageLabel:'بيانات غير كافية',stageFit:0,barsCount:b.length,lastDate:b.at(-1)?.date||null,events:[],manipulationLike:null};
-  const closes=b.map(x=>x.close),vols=b.map(x=>x.volume),ma20=sma(closes,20),ma50=sma(closes,50),r60=range(b.slice(-60)),r20=range(b.slice(-20)),prior=b.slice(-60,-20),priorSlope=slope(prior.map(x=>x.close)),s20=slope(closes.slice(-20)),s60=slope(closes.slice(-60));
-  const events=detectEvents(b,{r60}),phase=phaseState(b,events),rs=relativeStrength(b),pf=pfCauseEffect(b),recentVsa=b.slice(-15).map((_,j)=>vsa(b,b.length-15+j)).filter(Boolean);
+  const b=bars.slice(-WINDOW);if(b.length<WINDOW)return{ticker,stage:'غير كافٍ',stageLabel:'بيانات غير كافية',stageFit:0,barsCount:b.length,lastDate:b.at(-1)?.date||null,events:[],manipulationLike:null};
+  const closes=b.map(x=>x.close),vols=b.map(x=>x.volume),context=b.slice(0,CONTEXT),recent=b.slice(-RECENT),ma20=sma(closes,20),ma50=sma(closes,50),r50=range(b),r40=range(context),r10=range(recent),contextSlope=slope(context.map(x=>x.close))/Math.max(.0001,avg(context.map(x=>x.close))||1),recentSlope=slope(recent.map(x=>x.close))/Math.max(.0001,avg(recent.map(x=>x.close))||1),weightedSlope=CONTEXT_WEIGHT*contextSlope+RECENT_WEIGHT*recentSlope,changeShift=recentSlope-contextSlope,prior=context,priorSlope=contextSlope,s20=recentSlope,s60=weightedSlope,r60=r50,r20=r10;
+  const events=detectEvents(b,{r50}),phase=phaseState(b,events),rs=relativeStrength(b),pf=pfCauseEffect(b),recentVsa=recent.map((_,j)=>vsa(b,b.length-RECENT+j)).filter(Boolean);
   const spring=events.some(e=>e.type==='spring-like'),utad=events.some(e=>e.type==='utad-like'),sos=events.some(e=>e.type==='sos-like'),sow=events.some(e=>e.type==='sow-like');
-  const rangeTight=r20.width<r60.width*.78, up=s20>0&&s60>0&&closes.at(-1)>ma20&&ma20>ma50, down=s20<0&&s60<0&&closes.at(-1)<ma20&&ma20<ma50;
+  const rangeTight=r10.width<r40.width*.78, stabilization=recentSlope>=contextSlope*.2, up=weightedSlope>0&&recentSlope>0&&closes.at(-1)>ma20&&ma20>ma50, down=weightedSlope<0&&recentSlope<0&&closes.at(-1)<ma20&&ma20<ma50;
+  const recentEffort=recentVsa.some(x=>x.effortResult==='high-effort-low-result');
   const scores={
-    accumulation:[priorSlope<0,rangeTight,Math.abs(s20)<Math.abs(priorSlope)*.8,spring,sos,phase.phase==='B'||phase.phase==='C',recentVsa.some(x=>x.effortResult==='high-effort-low-result')].filter(Boolean).length,
-    distribution:[priorSlope>0,rangeTight,Math.abs(s20)<Math.abs(priorSlope)*.8,utad,sow,phase.phase==='B'||phase.phase==='C',recentVsa.some(x=>x.effortResult==='high-effort-low-result')].filter(Boolean).length,
-    markup:[up,ma20>ma50,s60>0,closes.at(-1)>r60.mid,closes.slice(-10).at(-1)>closes.slice(-10)[0],sos,rs.ret60!==null&&rs.ret60>0].filter(Boolean).length,
-    markdown:[down,ma20<ma50,s60<0,closes.at(-1)<r60.mid,closes.slice(-10).at(-1)<closes.slice(-10)[0],sow,rs.ret60!==null&&rs.ret60<0].filter(Boolean).length
+    accumulation:[(contextSlope<0?CONTEXT_WEIGHT:0)+(recentSlope>=contextSlope?RECENT_WEIGHT:0),rangeTight?RECENT_WEIGHT:0,stabilization?RECENT_WEIGHT:0,spring?RECENT_WEIGHT:0,sos?RECENT_WEIGHT:0,(phase.phase==='B'||phase.phase==='C')?RECENT_WEIGHT:0,recentEffort?RECENT_WEIGHT:0],
+    distribution:[(contextSlope>0?CONTEXT_WEIGHT:0)+(recentSlope<=contextSlope?RECENT_WEIGHT:0),rangeTight?RECENT_WEIGHT:0,stabilization?RECENT_WEIGHT:0,utad?RECENT_WEIGHT:0,sow?RECENT_WEIGHT:0,(phase.phase==='B'||phase.phase==='C')?RECENT_WEIGHT:0,recentEffort?RECENT_WEIGHT:0],
+    markup:[(contextSlope>0?CONTEXT_WEIGHT:0)+(recentSlope>0?RECENT_WEIGHT:0),up?RECENT_WEIGHT:0,weightedSlope>0?RECENT_WEIGHT:0,closes.at(-1)>r50.mid?RECENT_WEIGHT:0,closes.at(-1)>recent[0].close?RECENT_WEIGHT:0,sos?RECENT_WEIGHT:0,rs.ret20!==null&&rs.ret20>0?RECENT_WEIGHT:0],
+    markdown:[(contextSlope<0?CONTEXT_WEIGHT:0)+(recentSlope<0?RECENT_WEIGHT:0),down?RECENT_WEIGHT:0,weightedSlope<0?RECENT_WEIGHT:0,closes.at(-1)<r50.mid?RECENT_WEIGHT:0,closes.at(-1)<recent[0].close?RECENT_WEIGHT:0,sow?RECENT_WEIGHT:0,rs.ret20!==null&&rs.ret20<0?RECENT_WEIGHT:0].map(x=>Number(x))
   };
-  const stage=Object.entries(scores).sort((a,z)=>z[1]-a[1])[0][0];
-  const max=7, stageFit=Math.round(scores[stage]/max*100);
+  const stage=Object.entries(scores).sort((a,z)=>z[1].reduce((m,v)=>m+v,0)-a[1].reduce((m,v)=>m+v,0))[0][0];
+  const max=CONTEXT_WEIGHT+RECENT_WEIGHT+(5*RECENT_WEIGHT), stageFit=Math.round((scores[stage].reduce((m,v)=>m+v,0)/max)*100);
   const manipulationLike=stage==='accumulation'&&spring?'Spring/Shakeout-like (سلوك سعري محتمل)':stage==='distribution'&&utad?'UT/UTAD-like (سلوك سعري محتمل)':null;
   const componentSummary={
     vsa:{name:'VSA',evidence:recentVsa.slice(-5)},
@@ -107,8 +112,8 @@ function analyze(ticker,bars){
     choch:{name:'Change of Character',evidence:(up&&priorSlope<=0)?'bullish':(down&&priorSlope>=0)?'bearish':'none'},
     effortResult:{name:'Effort vs Result',evidence:recentVsa.filter(x=>x.effortResult).slice(-6)}
   };
-  const chart=b.map((x,i)=>({date:x.date,close:Number(x.close.toFixed(4)),volume:x.volume,stage:i<b.length-60?'context':stage}));
-  return{version:2,ticker,stage,stageLabel:{markdown:'هبوط — Markdown',accumulation:'تجميع — Accumulation',markup:'صعود — Markup',distribution:'تصريف — Distribution'}[stage],stageFit,stageScores:scores,phase,manipulationLike,events,components:componentSummary,chart,pointAndFigure:pf,lastClose:closes.at(-1),ma20,ma50,lastDate:b.at(-1).date,barsCount:b.length,updatedAt:new Date().toISOString()};
+  const chart=b.map((x,i)=>({date:x.date,close:Number(x.close.toFixed(4)),volume:x.volume,stage:i<CONTEXT?'context':stage}));
+  return{version:3,ticker,stage,stageLabel:{markdown:'هبوط — Markdown',accumulation:'تجميع — Accumulation',markup:'صعود — Markup',distribution:'تصريف — Distribution'}[stage],stageFit,stageScores:scores,weights:{contextSessions:CONTEXT,recentSessions:RECENT,contextWeight:CONTEXT_WEIGHT,recentWeight:RECENT_WEIGHT},weightedSlope,changeShift,phase,manipulationLike,events,components:componentSummary,chart,pointAndFigure:pf,lastClose:closes.at(-1),ma20,ma50,lastDate:b.at(-1).date,barsCount:b.length,updatedAt:new Date().toISOString()};
 }
 async function getCache(){return await getDataStore().get('scanner-cache-v1',{type:'json',consistency:'strong'})||{};}
 async function loadHistory(t){return await getDataStore().get(`${HISTORY_KEY}:${t}`,{type:'json',consistency:'strong'})||null;}
@@ -118,7 +123,7 @@ export async function collectWyckoffData({includeHistories=false}={}){
   if(!tickers.length)return{ok:false,error:'لا توجد أسهم في scanner-cache-v1.'};
   let index=0,processed=0,initialized=0,updated=0,unchanged=0,failed=0;const histories={};
   await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',date:today,startedAt:new Date().toISOString(),total:tickers.length,processed:0,initialized:0,updated:0,unchanged:0,failed:0});
-  const worker=async()=>{while(true){const i=index++;if(i>=tickers.length)return;const t=tickers[i];try{const old=await loadHistory(t);let bars=Array.isArray(old?.bars)?old.bars:[];if(!old?.initialized){const from=new Date(Date.now()-220*86400000).toISOString().slice(0,10);const d=(await massive(`/v2/aggs/ticker/${encodeURIComponent(t)}/range/1/day/${from}/${today}?adjusted=true&sort=asc&limit=5000`)).results||[];bars=d.map(normalizeBar).filter(Boolean).slice(-WINDOW);initialized++;}else{const d=(await massive(`/v2/aggs/ticker/${encodeURIComponent(t)}/range/1/day/${today}/${today}?adjusted=true&sort=asc&limit=10`)).results||[];const fresh=d.map(normalizeBar).filter(Boolean);if(fresh.length){const map=new Map(bars.map(x=>[x.date,x]));for(const x of fresh)map.set(x.date,x);bars=[...map.values()].sort((a,z)=>a.date.localeCompare(z.date)).slice(-WINDOW);updated++;}else unchanged++;}await saveHistory(t,{version:2,ticker:t,initialized:true,bars,updatedAt:new Date().toISOString(),lastSession:bars.at(-1)?.date||null});histories[t]={ticker:t,bars,lastSession:bars.at(-1)?.date||null};}catch(e){failed++;histories[t]={ticker:t,bars:[],error:String(e?.message||e)};}processed++;if(processed%10===0||processed===tickers.length)await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',date:today,total:tickers.length,processed,initialized,updated,unchanged,failed});}};
+  const worker=async()=>{while(true){const i=index++;if(i>=tickers.length)return;const t=tickers[i];try{const old=await loadHistory(t);let bars=Array.isArray(old?.bars)?old.bars:[];if(!old?.initialized){const from=new Date(Date.now()-220*86400000).toISOString().slice(0,10);const d=(await massive(`/v2/aggs/ticker/${encodeURIComponent(t)}/range/1/day/${from}/${today}?adjusted=true&sort=asc&limit=5000`)).results||[];bars=d.map(normalizeBar).filter(Boolean).slice(-WINDOW);initialized++;}else{const d=(await massive(`/v2/aggs/ticker/${encodeURIComponent(t)}/range/1/day/${today}/${today}?adjusted=true&sort=asc&limit=10`)).results||[];const fresh=d.map(normalizeBar).filter(Boolean);if(fresh.length){const map=new Map(bars.map(x=>[x.date,x]));for(const x of fresh)map.set(x.date,x);bars=[...map.values()].sort((a,z)=>a.date.localeCompare(z.date)).slice(-WINDOW);updated++;}else unchanged++;}await saveHistory(t,{version:3,ticker:t,initialized:true,bars,updatedAt:new Date().toISOString(),lastSession:bars.at(-1)?.date||null});histories[t]={ticker:t,bars,lastSession:bars.at(-1)?.date||null};}catch(e){failed++;histories[t]={ticker:t,bars:[],error:String(e?.message||e)};}processed++;if(processed%10===0||processed===tickers.length)await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',date:today,total:tickers.length,processed,initialized,updated,unchanged,failed});}};
   await Promise.all(Array.from({length:Math.min(CONCURRENCY,tickers.length)},worker));
   return{ok:true,date:today,total:tickers.length,processed,initialized,updated,unchanged,failed,...(includeHistories?{histories}:{})};
 }
@@ -127,8 +132,8 @@ export async function runWyckoff({force=false}={}){
   const today=todayET(),store=getDataStore(),existing=await store.get(RESULT_KEY,{type:'json',consistency:'strong'});if(!force&&existing?.date===today)return{ok:true,skipped:true,date:today,total:Number(existing.universeTickers||0)};
   const collected=await collectWyckoffData({includeHistories:true});if(!collected.ok)return collected;const results=[];const hs=collected.histories||{};const tickers=Object.keys(hs);
   await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',date:today,total:tickers.length,processed:0,collection:{initialized:collected.initialized,updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});
-  let done=0;for(const t of tickers){const h=hs[t];results.push(h.error?{version:2,ticker:t,stage:'غير متوفر',stageFit:0,error:h.error,barsCount:0,events:[]} : analyze(t,h.bars));done++;if(done%10===0||done===tickers.length)await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',date:today,total:tickers.length,processed:done,collection:{initialized:collected.initialized,updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});}
-  const payload={version:2,ready:true,date:today,updatedAt:new Date().toISOString(),windowSessions:WINDOW,records:results.sort((a,b)=>a.ticker.localeCompare(b.ticker)),universeTickers:tickers.length,source:'massive-daily-incremental-wyckoff-v2',components:['VSA','Swing-by-Swing','Phase A-E','Spring/UTAD','Point & Figure Cause/Effect proxy','Relative Strength','Change of Character','Effort vs Result'],chartCached:true};
+  let done=0;for(const t of tickers){const h=hs[t];results.push(h.error?{version:3,ticker:t,stage:'غير متوفر',stageFit:0,error:h.error,barsCount:0,events:[]} : analyze(t,h.bars));done++;if(done%10===0||done===tickers.length)await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',date:today,total:tickers.length,processed:done,collection:{initialized:collected.initialized,updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});}
+  const payload={version:3,ready:true,date:today,updatedAt:new Date().toISOString(),windowSessions:WINDOW,records:results.sort((a,b)=>a.ticker.localeCompare(b.ticker)),universeTickers:tickers.length,source:'massive-daily-incremental-wyckoff-v3-weighted-50-10',components:['VSA','Swing-by-Swing','Phase A-E','Spring/UTAD','Point & Figure Cause/Effect proxy','Relative Strength','Change of Character','Effort vs Result'],chartCached:true};
   await store.setJSON(RESULT_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',mode:'analysis',date:today,completedAt:payload.updatedAt,total:tickers.length,processed:results.length,historyKey:HISTORY_KEY+' per ticker'});return{ok:true,date:today,total:tickers.length,processed:results.length,updatedAt:payload.updatedAt,collection:{initialized:collected.initialized,updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}};
 }
 export async function readWyckoff(){return await getDataStore().get(RESULT_KEY,{type:'json',consistency:'strong'})||null;}
