@@ -94,7 +94,7 @@ function choosePrice(x,session,now){
   }
   if(!Number.isFinite(price)||price<=0)return null;
   const changeRaw=Number(x?.todaysChangePerc);
-  return {price,regularPrice:regular,preMarket:pre,afterHours:after,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:Number.isFinite(prevClose)&&prevClose>0?prevClose:null,changePct:Number.isFinite(changeRaw)?changeRaw:(Number.isFinite(prevClose)&&prevClose>0?(price-prevClose)/prevClose*100:null)};
+  return {extendedPrice:price,price,current:price,currentPrice:price,regularPrice:regular,preMarket:pre,afterHours:after,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:Number.isFinite(prevClose)&&prevClose>0?prevClose:null,changePct:Number.isFinite(changeRaw)?changeRaw:(Number.isFinite(prevClose)&&prevClose>0?(price-prevClose)/prevClose*100:null)};
 }
 
 export async function runMassiveCurrentUpdate(){

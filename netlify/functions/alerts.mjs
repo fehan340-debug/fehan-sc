@@ -324,8 +324,15 @@ export async function runAlertSweep(){
       const liveCandidates=[c,m];
       let extendedPrice=null;
       for(const live of liveCandidates){
-        const p=Number(live?.extendedPrice);
-        if(Number.isFinite(p)&&p>0){extendedPrice=p;break;}
+        // Both live price writers use the same five-minute lane. The Netlify
+        // fallback historically stored the value as `price` while the GitHub
+        // worker stored it as `extendedPrice`; accept either representation.
+        const direct=[live?.extendedPrice,live?.price,live?.currentPrice,live?.current];
+        for(const value of direct){
+          const p=Number(value);
+          if(Number.isFinite(p)&&p>0){extendedPrice=p;break;}
+        }
+        if(Number.isFinite(extendedPrice)&&extendedPrice>0)break;
         const sessionPrice=String(live?.priceSession||'');
         const ep=sessionPrice==='after'?Number(live?.afterHours):sessionPrice==='pre'?Number(live?.preMarket):null;
         if(Number.isFinite(ep)&&ep>0){extendedPrice=ep;break;}
