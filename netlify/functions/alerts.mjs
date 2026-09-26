@@ -221,7 +221,11 @@ export async function evaluateUserAlerts(email,records,usersMap=null){
     // Treat missing numeric fields as unavailable, not as zero.
     // Number(null) === 0 would otherwise make a missing after-hours quote
     // fire a price alert with "$0.00".
-    const rawPrice=Number(row?.extendedPrice);
+    // Price alerts accept the normalized live price first, with the same
+    // live-lane aliases used by the price writers. Never use a daily close
+    // or a missing value as the current alert price.
+    const rawPriceCandidates=[row?.extendedPrice,row?.price,row?.currentPrice,row?.current];
+    const rawPrice=rawPriceCandidates.map(Number).find(v=>Number.isFinite(v)&&v>0);
     const price=Number.isFinite(rawPrice)&&rawPrice>0?rawPrice:NaN;
     const rawChange=Number(row?.changePct);
     const change=Number.isFinite(rawChange)?rawChange:NaN;
@@ -308,12 +312,17 @@ export async function runAlertSweep(){
     const cache=await readPublishedCache().catch(()=>null);
     const currentRaw=await storeGet('scanner-current-price-v1',{})||{};
     const massiveRaw=await storeGet('scanner-massive-current-v1',{})||{};
-    const currentRecords=Array.isArray(currentRaw)?currentRaw:Object.values(currentRaw.records||currentRaw.data||currentRaw);
-    const massiveRecords=Array.isArray(massiveRaw)?massiveRaw:Object.values(massiveRaw.records||massiveRaw.data||massiveRaw);
-    const cachedRecords=Array.isArray(cache?.records)?cache.records:Object.values(cache?.records||{});
-    const liveMap=new Map(currentRecords.map(x=>[cleanTicker(x?.ticker),x]));
-    const massiveMap=new Map(massiveRecords.map(x=>[cleanTicker(x?.ticker),x]));
-    const cacheMap=new Map(cachedRecords.map(x=>[cleanTicker(x?.ticker),x]));
+    const toRecords=(raw)=>{
+      if(Array.isArray(raw))return raw.map(x=>({...x,ticker:cleanTicker(x?.ticker)}));
+      const source=raw?.records||raw?.data||raw||{};
+      return Object.entries(source).map(([key,x])=>({...x,ticker:cleanTicker(x?.ticker||key)}));
+    };
+    const currentRecords=toRecords(currentRaw);
+    const massiveRecords=toRecords(massiveRaw);
+    const cachedRecords=toRecords(cache?.records||{});
+    const liveMap=new Map(currentRecords.filter(x=>x.ticker).map(x=>[x.ticker,x]));
+    const massiveMap=new Map(massiveRecords.filter(x=>x.ticker).map(x=>[x.ticker,x]));
+    const cacheMap=new Map(cachedRecords.filter(x=>x.ticker).map(x=>[x.ticker,x]));
     const allTickers=Array.from(new Set([...liveMap.keys(),...massiveMap.keys(),...cacheMap.keys()]));
     const records=allTickers.map(t=>{
       const c=liveMap.get(t)||{},m=massiveMap.get(t)||{},base=cacheMap.get(t)||{},ind=m.indicators||base.indicators||{};

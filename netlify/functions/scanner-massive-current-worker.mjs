@@ -89,8 +89,9 @@ function choosePrice(x,session,now){
     if(lastTradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
     else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='pre'){price=minutePrice;source='preMarket';}
     else if(pre!=null){price=pre;source='preMarket';}
-  }else if(regular!=null){
-    price=regular;source='regularClose';
+  }else{
+    // Market fully closed: there is no new live price to evaluate.
+    // Do not turn the previous regular close into a live alert price.
   }
   if(!Number.isFinite(price)||price<=0)return null;
   const changeRaw=Number(x?.todaysChangePerc);
@@ -111,7 +112,7 @@ export async function runMassiveCurrentUpdate(){
     const now=new Date(), session=marketSession(now), snap=await getSnapshot(tickers), map={};
     for(const x of snap.tickers||[]){
       const t=String(x?.ticker||'').toUpperCase(); if(!t)continue;
-      const row=choosePrice(x,session,now); if(row)map[t]={...row,updatedAt:now.toISOString(),quoteState:'fresh'};
+      const row=choosePrice(x,session,now); if(row)map[t]={ticker:t,...row,updatedAt:now.toISOString(),quoteState:'fresh'};
     }
     const previous=await store.get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
     const previousRecords=previous?.records&&typeof previous.records==='object'?previous.records:{};
@@ -122,7 +123,7 @@ export async function runMassiveCurrentUpdate(){
       const nowEt=etParts(now), oldEt=oldAt?etParts(oldAt):null;
       const sameEtDate=Boolean(oldEt&&nowEt&&oldEt.year===nowEt.year&&oldEt.month===nowEt.month&&oldEt.day===nowEt.day);
       if(Number.isFinite(oldPrice)&&oldPrice>0&&String(old?.priceSession||'')===session&&sameEtDate){
-        map[t]={...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
+        map[t]={ticker:t,...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
       }
     }
     const payload={version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length};

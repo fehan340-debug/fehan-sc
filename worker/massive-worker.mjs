@@ -55,7 +55,8 @@ function choosePrice(x,session,now){
   else if(minute>0&&minuteSess==='pre'){price=minute;source='preMarket';}
   else if(pre>0){price=pre;source='preMarket';}
 }else{
-    if(regular>0){price=regular;source='regularClose';}
+    // Market fully closed: there is no new live price to evaluate.
+    // Do not turn the previous regular close into a live alert price.
   }
   if(!(price>0))return null;
   const ch=finite(x?.todaysChangePerc);
@@ -138,7 +139,7 @@ async function main(){
     const t=String(x?.ticker||'').toUpperCase();
     if(!t)continue;
     const row=choosePrice(x,session,now);
-    if(row)map[t]={...row,updatedAt:now.toISOString(),quoteState:'fresh'};
+    if(row)map[t]={ticker:t,...row,updatedAt:now.toISOString(),quoteState:'fresh'};
   }
   // A temporary missing quote must not turn an already visible price into a
   // dash. Keep the last known quote for the same market session until the next
@@ -152,7 +153,7 @@ async function main(){
     const oldAt=old?.updatedAt?new Date(old.updatedAt):null;
     const sameEtDate=oldAt&&etParts(oldAt).year===etParts(now).year&&etParts(oldAt).month===etParts(now).month&&etParts(oldAt).day===etParts(now).day;
     if(Number.isFinite(oldPrice)&&oldPrice>0 && String(old?.priceSession||'')===session && sameEtDate){
-      map[t]={...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
+      map[t]={ticker:t,...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
     }
   }
   const snapMap=new Map(Object.entries(map));
