@@ -52,4 +52,10 @@ jobs:
       - name: Collect daily model data and analyze Wyckoff
         env:
           WYCKOFF_FORCE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-        run: node --input-type=module -e "import('./netlify/functions/wyckoff-core.mjs').then(async ({runWyckoff}) => { const r = await runWyckoff({force: process.env.WYCKOFF_FORCE === 'true'}); console.log(JSON.stringify(r,null,2)); if (!r?.ok && !r?.skipped) process.exit(1); })"
+        run: |
+          node --input-type=module <<'NODE'
+          import { runWyckoff } from './netlify/functions/wyckoff-core.mjs';
+          const r = await runWyckoff({force: process.env.WYCKOFF_FORCE === 'true'});
+          console.log(JSON.stringify(r, null, 2));
+          if (!r?.ok && !r?.skipped) process.exit(1);
+          NODE
