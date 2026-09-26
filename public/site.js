@@ -393,13 +393,29 @@ async function loadCurrentPrices(){
     if(!r.ok||!d.ok)return false;
     const incomingUpdatedAt=d.updatedAt||null;
     currentPricesUpdatedAt=incomingUpdatedAt||currentPricesUpdatedAt; currentPriceSession=d.session||currentPriceSession||'closed';
+    // When the US market is fully closed, the five-minute worker intentionally
+    // stops. If the stored snapshot is empty/stale, read Massive directly once
+    // and use its last after-hours quote (afterHours.p). This is deliberately
+    // NOT day.c or prevDay.c, so weekend/holiday searches still have a price.
+    let map=d.records||{};
+    if(currentPriceSession==='closed' && (!map||!Object.keys(map).length)){
+      try{
+        resetMarketSnapshot();
+        const snap=await getMarketSnapshot();
+        map={};
+        for(const [ticker,item] of snap.entries()){
+          const p=Number(item?.price);
+          if(Number.isFinite(p)&&p>0)map[ticker]={ticker,extendedPrice:p,price:p,current:p,currentPrice:p,priceSession:'after',priceSource:'afterHours'};
+        }
+        if(Object.keys(map).length)currentPricesUpdatedAt=new Date().toISOString();
+      }catch(e){console.warn('[current-price] closed-session Massive fallback failed',e?.message||e);}
+    }
     // Do not rewrite the DOM every polling tick. The visible price remains
     // stable until the server publishes a new five-minute snapshot.
-    if(incomingUpdatedAt && incomingUpdatedAt===currentPricesAppliedAt){
+    if(incomingUpdatedAt && incomingUpdatedAt===currentPricesAppliedAt && Object.keys(map||{}).length){
       updateVisibleCurrentPrices();
       return true;
     }
-    const map=d.records||{};
     if(Array.isArray(scannerCache)){
       for(const row of scannerCache){
         const live=map[String(row?.ticker||'').toUpperCase()];
@@ -521,6 +537,25 @@ async function run(){
    // stale/empty technical snapshot from making a valid search return 0 rows.
    const liveCount=scannerCache.reduce((n,x)=>n+(Number.isFinite(Number(x?.extendedPrice))&&Number(x.extendedPrice)>0?1:0),0);
    if(liveCount===0)await loadCurrentPrices();
+
+   // Search must not depend on the cached technical snapshot for the current
+   // price. During a fully closed market, fetch Massive's snapshot and use the
+   // last after-hours price so the search can still calculate its filters.
+   if(browserMarketSession()==='closed'){
+     try{
+       resetMarketSnapshot();
+       const snap=await getMarketSnapshot(signal);
+       for(const row of scannerCache){
+         const item=snap.get(String(row?.ticker||'').toUpperCase());
+         const p=Number(item?.price);
+         if(Number.isFinite(p)&&p>0){
+           row.extendedPrice=p; row.current=p; row.currentPrice=p;
+           row.currentQuoteState='after-hours-closed'; row.priceSession='after';
+           row.priceSource='afterHours';
+         }
+       }
+     }catch(e){console.warn('[search] closed-session Massive refresh failed',e?.message||e);}
+   }
    const cutoff=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
    const selectedExchange=$("splitExchange")?.value||"ALL";
    const candidates=scannerCache.filter(x=>{
