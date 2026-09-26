@@ -16,3 +16,7 @@
 # GitHub Actions owns the Massive five-minute technical/live-price pipeline.
 # Netlify cron is used only for the independent daily/alert lanes.
 # Customer scanner responses are protected by no-store server responses.
+
+# Wyckoff model v2: dedicated GitHub Actions workflow. Admin only dispatches the workflow;
+# Netlify never executes or schedules the model. Results are read from the v2 cache.
+

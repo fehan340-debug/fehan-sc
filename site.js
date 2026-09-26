@@ -364,6 +364,16 @@ function displayPrice(stock){
   const extended=Number(stock?.extendedPrice);
   return Number.isFinite(extended)&&extended>0?extended:'-';
 }
+function scannerSearchPrice(stock){
+  const session=browserMarketSession();
+  const live=Number(stock?.extendedPrice);
+  if(session!=='closed') return Number.isFinite(live)&&live>0?live:null;
+  // When the U.S. market is fully closed there is no live/extended price.
+  // The scanner can still evaluate yesterday's completed regular-session close
+  // without turning that value into the app's live-price/alert price.
+  const close=Number(stock?.regularPrice ?? stock?.closePrice ?? stock?.prevClose);
+  return Number.isFinite(close)&&close>0?close:null;
+}
 function normalizeLivePrice(live){
   const extended=Number(live?.extendedPrice);
   if(Number.isFinite(extended)&&extended>0)return extended;
@@ -425,7 +435,8 @@ function formatCompactShares(value){
 }
 function addRow(r){
   const tr=document.createElement('tr');tr.dataset.ticker=r.ticker;tr.dataset.split=r.splitDate||'';
-  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
+  const rowPrice=Number(r.searchPrice);
+  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(rowPrice)&&rowPrice>0?'$'+fmt(rowPrice):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
   tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
 }
 
@@ -495,15 +506,14 @@ async function run(){
    // never delay a user's search click.
    const cutoff=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
    const selectedExchange=$("splitExchange")?.value||"ALL";
-   const candidates=scannerCache.filter(x=>{
-     const price=Number(x.extendedPrice);
-     return (selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)
+   const candidates=scannerCache.map(x=>({row:x,price:scannerSearchPrice(x)})).filter(({row:x,price})=>
+     (selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)
        &&x.splitDate>=cutoff&&Number.isFinite(price)&&price>0&&Number.isFinite(Number(x.splitOpen))
        &&price<=maxPrice&&price<=Number(x.splitOpen)*(1-drop/100)&&Number.isFinite(Number(x.rsi))&&Number(x.rsi)<=rsiMax
-       &&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax));
-   });
+       &&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax))
+   );
    setStatus("جاري البحث...");
-   for(let i=0;i<candidates.length&&!stopped;i++){while(paused&&!stopped)await sleep(250);if(stopped)break;const x=candidates[i],price=Number(x.extendedPrice);setStatus("جاري البحث...");addRow({...x,current:price,currentPrice:price,extendedPrice:price,target:Number(x.splitOpen)*(1-drop/100),drop:(Number(x.splitOpen)-price)/Number(x.splitOpen)*100});scanned++;updateStats();if(i%25===0)await sleep(0);}
+   for(let i=0;i<candidates.length&&!stopped;i++){while(paused&&!stopped)await sleep(250);if(stopped)break;const {row:x,price}=candidates[i];setStatus("جاري البحث...");addRow({...x,current:price,currentPrice:price,searchPrice:price,target:Number(x.splitOpen)*(1-drop/100),drop:(Number(x.splitOpen)-price)/Number(x.splitOpen)*100});scanned++;updateStats();if(i%25===0)await sleep(0);}
    updateSearchDataTime();
    if(stopped)setStatus(`تم الإيقاف. النتائج: <b>${results}</b>.`);else setStatus(`تم العثور على ${results} نتيجة.`,"ok");
  }catch(e){if(e?.name!=="AbortError"&&!stopped)setStatus("خطأ: "+e.message,"err")} finally{running=false;scanAbortController=null;$("start").disabled=false;$("stop").disabled=true;$("stop").textContent="■ إيقاف";$("pause").disabled=true;$("resume").disabled=true;}

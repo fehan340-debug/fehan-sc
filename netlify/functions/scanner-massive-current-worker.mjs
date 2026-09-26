@@ -99,6 +99,13 @@ function choosePrice(x,session,now){
 }
 
 export async function runMassiveCurrentUpdate(){
+  const sessionNow=marketSession(new Date());
+  // The live-price cycle starts at pre-market and ends after-hours.
+  // During the fully closed period, do not fetch or publish an empty snapshot;
+  // the last after-hours data must remain visible until the next pre-market run.
+  if(sessionNow==='closed'){
+    return {ok:true,skipped:true,session:'closed',reason:'price-cycle-stopped-outside-pre-after-hours'};
+  }
   const store=getDataStore();
   const lock=await store.get("scanner-massive-current-lock",{type:"json",consistency:"strong"}).catch(()=>null);
   if(lock?.startedAt&&Date.now()-new Date(lock.startedAt).getTime()<90*1000)return {ok:true,alreadyRunning:true};

@@ -1240,13 +1240,24 @@ async function loadSiteStats(){
   }catch(e){out.textContent=e.message||"تعذر تحميل إحصائيات الموقع.";}
 }
 function showAdminHome(){siteSettingsUnlocked=false;closeSiteSettingsUnlock();$("adminHome").style.display="block";document.querySelectorAll(".adminPanel").forEach(x=>x.classList.remove("show"));}
+function wyckoffStageLabel(x){return x?.stageLabel||({markdown:'هبوط — Markdown',accumulation:'تجميع — Accumulation',markup:'صعود — Markup',distribution:'تصريف — Distribution'}[x?.stage]||x?.stage||'—');}
+function renderWyckoff(data,status){
+  const rows=Array.isArray(data?.records)?data.records:[]; const body=$("wyckoffResults"); if(!body)return;
+  body.innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(wyckoffStageLabel(x))}</td><td>${Number.isFinite(Number(x.stageFit))?Number(x.stageFit)+'%':'—'}</td><td>${escapeHtml(x.manipulationLike||'—')}</td><td>${escapeHtml(x.lastDate||'—')}</td><td>${Number(x.barsCount||0)}</td><td>${(x.events||[]).slice(-4).map(e=>escapeHtml(e.type||'')).join('، ')||'—'}</td></tr>`).join('')||'<tr><td colspan="7">لا توجد نتائج.</td></tr>';
+  const meta=$("wyckoffMeta"); if(meta){meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — نافذة ${Number(data.windowSessions||100)} جلسة`:'لا توجد نتائج بعد.';}
+  if(status?.state==='building'||status?.state==='collecting'||status?.state==='analyzing')$("wyckoffMsg").textContent=`${status.state==='collecting'?'جاري جمع البيانات':status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
+}
+let wyckoffPollTimer=null;
+async function loadWyckoff(){
+  const msg=$("wyckoffMsg"); try{const d=await adminAction('wyckoff'); renderWyckoff(d.data,d.status); const active=d.status?.state==='building'||d.status?.state==='collecting'||d.status?.state==='analyzing'; if(active){msg.textContent=`${d.status.state==='collecting'?'جاري جمع البيانات':d.status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(d.status.processed||0)}/${Number(d.status.total||0)}…`; if(!wyckoffPollTimer){wyckoffPollTimer=setInterval(()=>loadWyckoff().catch(()=>{}),3000);}} else {if(wyckoffPollTimer){clearInterval(wyckoffPollTimer);wyckoffPollTimer=null;} if(d.status?.state==='ready')msg.textContent=`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`; else msg.textContent='لم يتم تشغيل النموذج بعد.';}}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج Wyckoff.';}}
+async function collectModelDataNow(){const btn=$("collectModelData"),msg=$("wyckoffMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال دورة النماذج إلى GitHub Actions…";try{const d=await adminAction("collect-model-data");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل دورة النماذج.");msg.textContent="بدأت دورة النماذج في GitHub Actions. سيتم تحديث حالة الجمع والتحليل هنا تلقائيًا.";await sleep(1200);await loadWyckoff();}catch(e){msg.textContent=e.message||"تعذر تشغيل دورة النماذج.";}finally{btn.disabled=false;}}
 async function showAdminPanel(name){
   if(name==="site"){
     if(!await unlockSiteSettings())return;
     if(!await loadSiteSettingsPanel())return;
   }
   $("adminHome").style.display="none";document.querySelectorAll(".adminPanel").forEach(x=>x.classList.remove("show"));$("adminPanel-"+name).classList.add("show");
-  if(name==="customers")loadAdminUsers();if(name==="support")loadAdminRequests("support","pending");if(name==="stats")loadSiteStats();
+  if(name==="customers")loadAdminUsers();if(name==="support")loadAdminRequests("support","pending");if(name==="stats")loadSiteStats();if(name==="models")loadWyckoff();
 }
 document.querySelectorAll("[data-admin-panel]").forEach(b=>{
   b.addEventListener('click',async e=>{
@@ -1255,6 +1266,7 @@ document.querySelectorAll("[data-admin-panel]").forEach(b=>{
     await showAdminPanel(name);
   });
 });document.querySelectorAll(".adminBack").forEach(b=>b.onclick=showAdminHome);
+$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);
 
 async function approveRequest(id){
   const btn=[...document.querySelectorAll('.approveReq')].find(x=>x.dataset.id===id);

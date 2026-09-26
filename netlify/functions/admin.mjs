@@ -66,6 +66,20 @@ export default async function(request){
     if(action==="refresh-borrow") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/update-short-background"});
     if(action==="refresh-massive-current") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-massive-current-worker"});
     if(action==="refresh-massive") return json(await dispatchMassiveWorker({source:'manual-admin-massive'}),202);
+    if(action==="collect-model-data") {
+      const token=String(process.env.GITHUB_ACTIONS_TOKEN||"").trim();
+      const repo=String(process.env.GITHUB_REPO||process.env.GITHUB_REPOSITORY||"").trim();
+      if(!token||!repo||!repo.includes("/")) return json({ok:false,error:"لم يتم إعداد GITHUB_ACTIONS_TOKEN و GITHUB_REPO في Netlify."},500);
+      const ref=String(process.env.GITHUB_WORKFLOW_REF||"main").trim()||"main";
+      const response=await fetch(`https://api.github.com/repos/${repo}/actions/workflows/wyckoff-models.yml/dispatches`,{
+        method:"POST",
+        headers:{"accept":"application/vnd.github+json","authorization":`Bearer ${token}`,"x-github-api-version":"2022-11-28","content-type":"application/json"},
+        body:JSON.stringify({ref,inputs:{source:"admin-models",requested_at:new Date().toISOString()}})
+      });
+      if(!response.ok){const body=await response.text().catch(()=>"");return json({ok:false,error:`تعذر تشغيل GitHub Actions (${response.status}). ${body.slice(0,300)}`},502);}
+      return json({ok:true,queued:true,workflow:"Wyckoff Models",message:"تم إرسال دورة جمع البيانات وتحليل Wyckoff إلى GitHub Actions."},202);
+    }
+    if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus()}); }
     if(action==="site-stats") {
       const site=await getSiteSettings();
       const requestRows=await getRequests();

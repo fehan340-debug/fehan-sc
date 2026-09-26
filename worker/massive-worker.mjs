@@ -130,6 +130,13 @@ async function main(){
   //    The technical cache remains unchanged for the rest of that day.
 
   const now=new Date(),session=marketSession(now);
+  // Price cycle runs only from US pre-market through the end of after-hours.
+  // Once after-hours ends, keep the last published after-hours snapshot intact;
+  // never publish an empty/closed snapshot that would turn visible prices into dashes.
+  if(session==='closed'){
+    console.log('[worker] Market closed: price cycle stopped; keeping last after-hours snapshot.');
+    return;
+  }
   const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'});
   const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))].sort();
   if(!tickers.length)throw new Error('لا توجد قائمة أسهم معتمدة لتحديث Massive. نفّذ التحديث اليومي لقائمة Stock Split أولاً.');
