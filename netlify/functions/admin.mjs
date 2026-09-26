@@ -67,10 +67,13 @@ export default async function(request){
     if(action==="refresh-massive-current") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-massive-current-worker"});
     if(action==="refresh-massive") return json(await dispatchMassiveWorker({source:'manual-admin-massive'}),202);
     if(action==="collect-model-data") {
-      const token=String(process.env.GITHUB_ACTIONS_TOKEN||"").trim();
-      const repo=String(process.env.GITHUB_REPO||process.env.GITHUB_REPOSITORY||"").trim();
-      if(!token||!repo||!repo.includes("/")) return json({ok:false,error:"لم يتم إعداد GITHUB_ACTIONS_TOKEN و GITHUB_REPO في Netlify."},500);
-      const ref=String(process.env.GITHUB_WORKFLOW_REF||"main").trim()||"main";
+      // Use the same GitHub credentials already configured in Netlify for the
+      // existing worker workflows. Do not require a second set of secrets just
+      // for Wyckoff.
+      const token=String(process.env.GITHUB_WORKER_TOKEN||"").trim();
+      const repo=String(process.env.GITHUB_WORKER_REPO||"").trim();
+      if(!token||!repo||!repo.includes("/")) return json({ok:false,error:"لم يتم إعداد GITHUB_WORKER_TOKEN و GITHUB_WORKER_REPO في Netlify."},500);
+      const ref=String(process.env.GITHUB_WORKER_REF||"main").trim()||"main";
       const response=await fetch(`https://api.github.com/repos/${repo}/actions/workflows/wyckoff-models.yml/dispatches`,{
         method:"POST",
         headers:{"accept":"application/vnd.github+json","authorization":`Bearer ${token}`,"x-github-api-version":"2022-11-28","content-type":"application/json"},

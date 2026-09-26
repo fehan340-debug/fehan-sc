@@ -253,14 +253,18 @@ function browserMarketSession(){
   return 'closed';
 }
 function chooseBrowserLivePrice(x,session){
-  const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c),prev=Number(x?.prevDay?.c),min=Number(x?.min?.c);
+  const extended=Number(x?.extendedPrice),direct=Number(x?.price),pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c),prev=Number(x?.prevDay?.c),min=Number(x?.min?.c);
   const valid=v=>Number.isFinite(v)&&v>0?v:null;
-  const lastValid=valid(last),preValid=valid(pre),afterValid=valid(after),dayValid=valid(day),prevValid=valid(prev),minValid=valid(min);
+  const extendedValid=valid(extended),directValid=valid(direct),lastValid=valid(last),preValid=valid(pre),afterValid=valid(after),dayValid=valid(day),prevValid=valid(prev),minValid=valid(min);
   const sessionOfTs=ts=>{const n=Number(ts);if(!Number.isFinite(n)||n<=0)return null;const d=new Date(n>1e14?n/1e3:n>1e11?n:n*1000);const q=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);const h=Number(q.find(x=>x.type==='hour')?.value||0),m=Number(q.find(x=>x.type==='minute')?.value||0),mins=h*60+m;if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;};
   const lastSession=sessionOfTs(x?.lastTrade?.t),minSession=sessionOfTs(x?.min?.t);
-  if(session==='pre') return (lastSession==='pre'&&lastValid) || (minSession==='pre'&&minValid) || preValid || null;
-  if(session==='regular') return (lastSession==='regular'&&lastValid) || dayValid || prevValid || null;
-  if(session==='after') return (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
+  if(session==='pre') return extendedValid || (lastSession==='pre'&&lastValid) || (minSession==='pre'&&minValid) || preValid || null;
+  if(session==='regular') return extendedValid || (lastSession==='regular'&&lastValid) || (minSession==='regular'&&minValid) || directValid || null;
+  if(session==='after') return extendedValid || (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
+  // CLOSED: keep the last completed after-hours price visible. Do not fall
+  // back to regular/day/previous close. The stored after-hours price remains
+  // frozen until the next pre-market session supplies a new quote.
+  if(session==='closed') return (String(x?.priceSession||'')==='after'&&extendedValid) || (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
   return null;
 }
 async function getMarketSnapshot(signal){
@@ -512,9 +516,11 @@ async function run(){
    setStatus("جاري البحث...");
    const cache=await loadScannerCache({wait:true,maxAttempts:180});
    if(!cache.ready||!scannerCache.length){setStatus(cache.buildError?`فشل تجهيز بيانات الباحث: ${escapeHtml(cache.buildError)}`:"بيانات الباحث قيد التجهيز لأول مرة. انتظر اكتمال الكاش ثم اضغط بحث مرة أخرى.","err");return;}
-   // IMPORTANT: search runs only against the already-preloaded snapshot.
-   // Current-price refresh happens independently in the background; it must
-   // never delay a user's search click.
+   // If the technical cache currently has no live prices, force one read of
+   // the independent five-minute price lane before filtering. This prevents a
+   // stale/empty technical snapshot from making a valid search return 0 rows.
+   const liveCount=scannerCache.reduce((n,x)=>n+(Number.isFinite(Number(x?.extendedPrice))&&Number(x.extendedPrice)>0?1:0),0);
+   if(liveCount===0)await loadCurrentPrices();
    const cutoff=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
    const selectedExchange=$("splitExchange")?.value||"ALL";
    const candidates=scannerCache.filter(x=>{

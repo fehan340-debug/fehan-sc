@@ -62,42 +62,43 @@ async function getSnapshot(tickers){
 }
 
 function choosePrice(x,session,now){
-  const prevClose=Number(x?.prevDay?.c);
-  const dayClose=Number(x?.day?.c);
-  const officialClose=session==='regular' ? (Number.isFinite(dayClose)&&dayClose>0?dayClose:(Number.isFinite(prevClose)&&prevClose>0?prevClose:null)) : (Number.isFinite(dayClose)&&dayClose>0?dayClose:(Number.isFinite(prevClose)&&prevClose>0?prevClose:null));
-  const lastTrade=Number.isFinite(Number(x?.lastTrade?.p))&&Number(x.lastTrade.p)>0?Number(x.lastTrade.p):null;
-  const lastTradeSess=tradeSession(x?.lastTrade?.t,now);
-  const afterPrice=Number(x?.afterHours?.p);
-  const prePrice=Number(x?.preMarket?.p);
-  const minutePrice=Number(x?.min?.c);
-  const minuteSess=tradeSession(x?.min?.t,now);
-  const regularPrice=officialClose;
+  const prevClose=Number.isFinite(Number(x?.prevDay?.c))?Number(x.prevDay.c):null;
+  const dayClose=Number.isFinite(Number(x?.day?.c))?Number(x.day.c):null;
+  const directExtended=Number.isFinite(Number(x?.extendedPrice))?Number(x.extendedPrice):null;
+  const directPrice=Number.isFinite(Number(x?.price))?Number(x.price):null;
+  const lastTrade=Number.isFinite(Number(x?.lastTrade?.p))?Number(x.lastTrade.p):null,lastTradeSess=tradeSession(x?.lastTrade?.t,now);
+  const minutePrice=Number.isFinite(Number(x?.min?.c))?Number(x.min.c):null,minuteSess=tradeSession(x?.min?.t,now);
+  const pre=Number.isFinite(Number(x?.preMarket?.p))?Number(x.preMarket.p):null,after=Number.isFinite(Number(x?.afterHours?.p))?Number(x.afterHours.p):null;
+  const regularClose=dayClose>0?dayClose:(prevClose>0?prevClose:null);
   const valid=v=>Number.isFinite(v)&&v>0?v:null;
-  const after=valid(afterPrice);
-  const pre=valid(prePrice);
-  const regular=valid(regularPrice)||valid(dayClose)||valid(prevClose);
   let price=null,source=null;
-  // Session-specific live price only. Never fall back to another session.
-  if(session==='regular'){
-    if(lastTradeSess==='regular'&&lastTrade!=null){price=lastTrade;source='regular';}
-    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='regular'){price=minutePrice;source='regular';}
-  }else if(session==='after'){
-    if(lastTradeSess==='after'&&lastTrade!=null){price=lastTrade;source='afterHours';}
-    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='after'){price=minutePrice;source='afterHours';}
-    else if(after!=null){price=after;source='afterHours';}
-  }else if(session==='pre'){
-    if(lastTradeSess==='pre'&&lastTrade!=null){price=lastTrade;source='preMarket';}
-    else if(Number.isFinite(minutePrice)&&minutePrice>0&&minuteSess==='pre'){price=minutePrice;source='preMarket';}
-    else if(pre!=null){price=pre;source='preMarket';}
-  }else{
-    // Market fully closed: there is no new live price to evaluate.
-    // Do not turn the previous regular close into a live alert price.
-  }
-  if(!Number.isFinite(price)||price<=0)return null;
-  const changeRaw=Number(x?.todaysChangePerc);
-  return {extendedPrice:price,price,current:price,currentPrice:price,regularPrice:regular,preMarket:pre,afterHours:after,priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:Number.isFinite(prevClose)&&prevClose>0?prevClose:null,changePct:Number.isFinite(changeRaw)?changeRaw:(Number.isFinite(prevClose)&&prevClose>0?(price-prevClose)/prevClose*100:null)};
-}
 
+  // Massive's explicit extendedPrice is the first source during an active
+  // market session. This prevents the live-price lane from missing quotes
+  // when Massive supplies the current/extended value without a usable
+  // lastTrade timestamp. Never use it while the market is fully closed.
+  if(session==='pre'){
+    if(valid(directExtended)){price=directExtended;source='extendedPrice';}
+    else if(lastTradeSess==='pre'&&valid(lastTrade)){price=lastTrade;source='preMarket';}
+    else if(minuteSess==='pre'&&valid(minutePrice)){price=minutePrice;source='preMarket';}
+    else if(valid(pre)){price=pre;source='preMarket';}
+  }else if(session==='regular'){
+    if(valid(directExtended)){price=directExtended;source='extendedPrice';}
+    else if(lastTradeSess==='regular'&&valid(lastTrade)){price=lastTrade;source='regular';}
+    else if(minuteSess==='regular'&&valid(minutePrice)){price=minutePrice;source='regular';}
+    else if(valid(directPrice)){price=directPrice;source='snapshotPrice';}
+  }else if(session==='after'){
+    if(valid(directExtended)){price=directExtended;source='extendedPrice';}
+    else if(lastTradeSess==='after'&&valid(lastTrade)){price=lastTrade;source='afterHours';}
+    else if(minuteSess==='after'&&valid(minutePrice)){price=minutePrice;source='afterHours';}
+    else if(valid(after)){price=after;source='afterHours';}
+  }else{
+    return null;
+  }
+  if(!valid(price))return null;
+  const changeRaw=Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):null;
+  return {extendedPrice:price,price,current:price,currentPrice:price,regularPrice:regularClose,preMarket:valid(pre),afterHours:valid(after),minutePrice:valid(minutePrice),priceSession:session,priceSource:source,tradeAt:timestampMs(x?.lastTrade?.t)?new Date(timestampMs(x.lastTrade.t)).toISOString():null,prevClose:valid(prevClose),changePct:Number.isFinite(changeRaw)?changeRaw:(valid(prevClose)?(price-prevClose)/prevClose*100:null)};
+}
 export async function runMassiveCurrentUpdate(){
   const sessionNow=marketSession(new Date());
   // The live-price cycle starts at pre-market and ends after-hours.
