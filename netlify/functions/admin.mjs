@@ -82,7 +82,8 @@ export default async function(request){
       if(!response.ok){const body=await response.text().catch(()=>"");return json({ok:false,error:`تعذر تشغيل GitHub Actions (${response.status}). ${body.slice(0,300)}`},502);}
       return json({ok:true,queued:true,workflow:"Wyckoff Models",message:"تم إرسال دورة جمع البيانات وتحليل Wyckoff إلى GitHub Actions."},202);
     }
-    if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus()}); }
+    if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus, readWyckoffConfig } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus(),config:await readWyckoffConfig()}); }
+    if(action==="save-wyckoff-settings") { const { saveWyckoffConfig } = await import("./wyckoff-core.mjs"); try{return json({ok:true,config:await saveWyckoffConfig(b.recentWeightPercent)});}catch(e){return json({ok:false,error:String(e?.message||e)},400);} }
     if(action==="site-stats") {
       const site=await getSiteSettings();
       const requestRows=await getRequests();
