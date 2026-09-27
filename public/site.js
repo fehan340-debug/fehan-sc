@@ -453,10 +453,21 @@ function formatCompactShares(value){
   if(n>=1e3)return `${Number((n/1e3).toFixed(1)).toLocaleString('en-US')}K`;
   return String(Math.round(n));
 }
+function webullQuoteUrl(ticker,exchange){
+  const t=String(ticker||'').trim().toUpperCase();
+  if(!/^[A-Z0-9.$_-]+$/.test(t))return 'https://www.webull.com/quote';
+  const ex=String(exchange||'').trim().toUpperCase();
+  const market=ex==='XNAS'||ex==='NASDAQ'?'nasdaq':ex==='XNYS'||ex==='NYSE'?'nyse':ex==='XASE'||ex==='AMEX'?'amex':'';
+  return market?`https://www.webull.com/quote/${market}-${encodeURIComponent(t.toLowerCase())}`:`https://www.webull.com/quote`;
+}
+function openWebull(ticker,exchange){
+  const url=webullQuoteUrl(ticker,exchange);
+  window.location.href=url;
+}
 function addRow(r){
   const tr=document.createElement('tr');tr.dataset.ticker=r.ticker;tr.dataset.split=r.splitDate||'';
-  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
-  tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
+  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td><button type="button" class="webullBtn webullOpen" title="فتح السهم في Webull">🟢 Webull</button></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
+  tr.querySelector('.webullOpen').onclick=()=>openWebull(r.ticker,r.primaryExchange||r.exchange);tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
 }
 
 async function getBars4H(t,from,to,key,signal){const path=`/v2/aggs/ticker/${encodeURIComponent(t)}/range/4/hour/${from}/${to}?adjusted=true&sort=asc&limit=50000`;const rows=(await getJSON(massive(path),3,signal)).results||[];return rows.filter(b=>Number(b?.l)>0&&Number(b?.h)>0&&Number(b?.c)>0);}
@@ -556,8 +567,8 @@ function renderFavorites(){
     const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';
     const x=cacheFind(f)||{};
     const price=displayPrice(x),change=Number(x?.changePct),short=Number(x?.shortShares),fee=Number(x?.borrowFee),ff=formatCompactShares(x?.freeFloat);
-    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
-    tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
+    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button type="button" class="webullBtn webullOpen" title="فتح السهم في Webull">🟢 Webull</button></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
+    tr.querySelector('.webullOpen').onclick=()=>openWebull(f.ticker,x.primaryExchange||x.exchange||f.primaryExchange||f.exchange);tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
   }
 }
 
@@ -1254,15 +1265,16 @@ async function loadSiteStats(){
 }
 function showAdminHome(){siteSettingsUnlocked=false;closeSiteSettingsUnlock();$("adminHome").style.display="block";document.querySelectorAll(".adminPanel").forEach(x=>x.classList.remove("show"));}
 function wyckoffStageLabel(x){return x?.stageLabel||({markdown:'هبوط — Markdown',accumulation:'تجميع — Accumulation',markup:'صعود — Markup',distribution:'تصريف — Distribution'}[x?.stage]||x?.stage||'—');}
-function renderWyckoff(data,status){
+function renderWyckoff(data,status,config){
   const rows=Array.isArray(data?.records)?data.records:[]; const body=$("wyckoffResults"); if(!body)return;
   body.innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(wyckoffStageLabel(x))}</td><td>${Number.isFinite(Number(x.stageFit))?Number(x.stageFit)+'%':'—'}</td><td>${escapeHtml(x.manipulationLike||'—')}</td><td>${escapeHtml(x.lastDate||'—')}</td><td>${Number(x.barsCount||0)}</td><td>${(x.events||[]).slice(-4).map(e=>escapeHtml(e.type||'')).join('، ')||'—'}</td></tr>`).join('')||'<tr><td colspan="7">لا توجد نتائج.</td></tr>';
-  const meta=$("wyckoffMeta"); if(meta){meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — نافذة ${Number(data.windowSessions||100)} جلسة`:'لا توجد نتائج بعد.';}
+  const meta=$("wyckoffMeta"); if(meta){meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — نافذة ${Number(data.windowSessions||35)} جلسة — وزن آخر 10: ${Number(data.recentWeightPercent??config?.recentWeightPercent??60)}%`:'لا توجد نتائج بعد.';} const slider=$("wyckoffRecentWeight"),value=$("wyckoffRecentWeightValue"); if(slider){slider.value=String(Number(config?.recentWeightPercent??data?.recentWeightPercent??60)); if(value)value.textContent=slider.value+'%';}
   if(status?.state==='building'||status?.state==='collecting'||status?.state==='analyzing')$("wyckoffMsg").textContent=`${status.state==='collecting'?'جاري جمع البيانات':status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
 }
 let wyckoffPollTimer=null;
 async function loadWyckoff(){
-  const msg=$("wyckoffMsg"); try{const d=await adminAction('wyckoff'); renderWyckoff(d.data,d.status); const active=d.status?.state==='building'||d.status?.state==='collecting'||d.status?.state==='analyzing'; if(active){msg.textContent=`${d.status.state==='collecting'?'جاري جمع البيانات':d.status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(d.status.processed||0)}/${Number(d.status.total||0)}…`; if(!wyckoffPollTimer){wyckoffPollTimer=setInterval(()=>loadWyckoff().catch(()=>{}),3000);}} else {if(wyckoffPollTimer){clearInterval(wyckoffPollTimer);wyckoffPollTimer=null;} if(d.status?.state==='ready')msg.textContent=`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`; else msg.textContent='لم يتم تشغيل النموذج بعد.';}}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج Wyckoff.';}}
+  const msg=$("wyckoffMsg"); try{const d=await adminAction('wyckoff'); renderWyckoff(d.data,d.status,d.config); const active=d.status?.state==='building'||d.status?.state==='collecting'||d.status?.state==='analyzing'; if(active){msg.textContent=`${d.status.state==='collecting'?'جاري جمع البيانات':d.status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(d.status.processed||0)}/${Number(d.status.total||0)}…`; if(!wyckoffPollTimer){wyckoffPollTimer=setInterval(()=>loadWyckoff().catch(()=>{}),3000);}} else {if(wyckoffPollTimer){clearInterval(wyckoffPollTimer);wyckoffPollTimer=null;} if(d.status?.state==='ready')msg.textContent=`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`; else msg.textContent='لم يتم تشغيل النموذج بعد.';}}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج Wyckoff.';}}
+async function saveWyckoffSettings(){const slider=$("wyckoffRecentWeight"),msg=$("wyckoffMsg");if(!slider)return;try{const d=await adminAction("save-wyckoff-settings",{recentWeightPercent:Number(slider.value)});if(!d?.ok)throw Error(d?.error||"تعذر حفظ الوزن.");$("wyckoffRecentWeightValue").textContent=Number(d.config?.recentWeightPercent??slider.value)+"%";if(msg)msg.textContent="تم حفظ الوزن. شغّل جمع البيانات + تحليل النماذج لتطبيقه.";}catch(e){if(msg)msg.textContent=e.message||"تعذر حفظ الوزن.";}}
 async function collectModelDataNow(){const btn=$("collectModelData"),msg=$("wyckoffMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال دورة النماذج إلى GitHub Actions…";try{const d=await adminAction("collect-model-data");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل دورة النماذج.");msg.textContent="بدأت دورة النماذج في GitHub Actions. سيتم تحديث حالة الجمع والتحليل هنا تلقائيًا.";await sleep(1200);await loadWyckoff();}catch(e){msg.textContent=e.message||"تعذر تشغيل دورة النماذج.";}finally{btn.disabled=false;}}
 async function showAdminPanel(name){
   if(name==="site"){
@@ -1279,7 +1291,7 @@ document.querySelectorAll("[data-admin-panel]").forEach(b=>{
     await showAdminPanel(name);
   });
 });document.querySelectorAll(".adminBack").forEach(b=>b.onclick=showAdminHome);
-$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);
+$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);$("saveWyckoffSettings")?.addEventListener("click",saveWyckoffSettings);$("wyckoffRecentWeight")?.addEventListener("input",e=>{const v=$("wyckoffRecentWeightValue");if(v)v.textContent=e.target.value+"%";});
 
 async function approveRequest(id){
   const btn=[...document.querySelectorAll('.approveReq')].find(x=>x.dataset.id===id);
