@@ -453,21 +453,10 @@ function formatCompactShares(value){
   if(n>=1e3)return `${Number((n/1e3).toFixed(1)).toLocaleString('en-US')}K`;
   return String(Math.round(n));
 }
-function webullQuoteUrl(ticker,exchange){
-  const t=String(ticker||'').trim().toUpperCase();
-  if(!/^[A-Z0-9.$_-]+$/.test(t))return 'https://www.webull.com/quote';
-  const ex=String(exchange||'').trim().toUpperCase();
-  const market=ex==='XNAS'||ex==='NASDAQ'?'nasdaq':ex==='XNYS'||ex==='NYSE'?'nyse':ex==='XASE'||ex==='AMEX'?'amex':'';
-  return market?`https://www.webull.com/quote/${market}-${encodeURIComponent(t.toLowerCase())}`:`https://www.webull.com/quote`;
-}
-function openWebull(ticker,exchange){
-  const url=webullQuoteUrl(ticker,exchange);
-  window.location.href=url;
-}
 function addRow(r){
   const tr=document.createElement('tr');tr.dataset.ticker=r.ticker;tr.dataset.split=r.splitDate||'';
-  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td><button type="button" class="webullBtn webullOpen" title="فتح السهم في Webull">🟢 Webull</button></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
-  tr.querySelector('.webullOpen').onclick=()=>openWebull(r.ticker,r.primaryExchange||r.exchange);tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
+  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
+  tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
 }
 
 async function getBars4H(t,from,to,key,signal){const path=`/v2/aggs/ticker/${encodeURIComponent(t)}/range/4/hour/${from}/${to}?adjusted=true&sort=asc&limit=50000`;const rows=(await getJSON(massive(path),3,signal)).results||[];return rows.filter(b=>Number(b?.l)>0&&Number(b?.h)>0&&Number(b?.c)>0);}
@@ -567,8 +556,8 @@ function renderFavorites(){
     const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';
     const x=cacheFind(f)||{};
     const price=displayPrice(x),change=Number(x?.changePct),short=Number(x?.shortShares),fee=Number(x?.borrowFee),ff=formatCompactShares(x?.freeFloat);
-    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button type="button" class="webullBtn webullOpen" title="فتح السهم في Webull">🟢 Webull</button></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
-    tr.querySelector('.webullOpen').onclick=()=>openWebull(f.ticker,x.primaryExchange||x.exchange||f.primaryExchange||f.exchange);tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
+    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
+    tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
   }
 }
 
