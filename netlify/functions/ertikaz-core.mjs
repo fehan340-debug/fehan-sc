@@ -131,7 +131,8 @@ export function evaluateErtikazRules(ticker,row,bars,nowDate){
     {key:'liquiditySweep',label:'سحب سيولة ≤7% تحت القاع والعودة خلال جلسة أو أقل',passed:Boolean(seq.liquidity),value:seq.liquidity?.sweepLow??null,detail:seq.liquidity?`سحب إلى ${seq.liquidity.sweepLow.toFixed(4)} ثم عودة ${seq.liquidity.recoveryClose.toFixed(4)} في ${seq.liquidity.recoveryDate}`:'لم يتحقق سحب السيولة بالتسلسل المطلوب'}
   ];
   const all=checks.every(x=>x.passed);
-  return {version:1,ticker,model:'ارتكاز',qualified:all,statusLabel:all?'ارتكاز مكتمل':'ارتكاز — شروط غير مكتملة',splitDate,elapsedDays:elapsed,rsiDaily:rsi,shortAvailable:short,base:seq.base,resistance:seq.resistance,supportRetest:seq.support,liquiditySweep:seq.liquidity,checks,passedCount:checks.filter(x=>x.passed).length,totalChecks:checks.length,last4hDate:bars.at(-1)?.date||null,bars4hCount:bars.length,updatedAt:new Date().toISOString()};
+  const name=String(row?.name||row?.companyName||row?.company_name||'');
+  return {version:1,ticker,name,model:'ارتكاز',qualified:all,statusLabel:all?'ارتكاز مكتمل':'ارتكاز — شروط غير مكتملة',splitDate,elapsedDays:elapsed,rsiDaily:rsi,shortAvailable:short,base:seq.base,resistance:seq.resistance,supportRetest:seq.support,liquiditySweep:seq.liquidity,checks,passedCount:checks.filter(x=>x.passed).length,totalChecks:checks.length,last4hDate:bars.at(-1)?.date||null,bars4hCount:bars.length,updatedAt:new Date().toISOString()};
 }
 
 export async function getErtikazConfig(){const raw=await getDataStore().get(CONFIG_KEY,{type:'json',consistency:'strong'}).catch(()=>null);return{version:1,lookbackDays:Number.isFinite(Number(raw?.lookbackDays))?clamp(Number(raw.lookbackDays),60,365):DEFAULT_LOOKBACK_DAYS};}
