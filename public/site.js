@@ -1257,21 +1257,46 @@ function wyckoffStageLabel(x){return x?.stageLabel||({markdown:'هبوط — Mar
 function renderWyckoff(data,status,config){
   const rows=Array.isArray(data?.records)?data.records:[]; const body=$("wyckoffResults"); if(!body)return;
   body.innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(wyckoffStageLabel(x))}</td><td>${Number.isFinite(Number(x.stageFit))?Number(x.stageFit)+'%':'—'}</td><td>${escapeHtml(x.manipulationLike||'—')}</td><td>${escapeHtml(x.lastDate||'—')}</td><td>${Number(x.barsCount||0)}</td><td>${(x.events||[]).slice(-4).map(e=>escapeHtml(e.type||'')).join('، ')||'—'}</td></tr>`).join('')||'<tr><td colspan="7">لا توجد نتائج.</td></tr>';
-  const meta=$("wyckoffMeta"); if(meta){meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — نافذة ${Number(data.windowSessions||35)} جلسة — وزن آخر 10: ${Number(data.recentWeightPercent??config?.recentWeightPercent??60)}%`:'لا توجد نتائج بعد.';} const slider=$("wyckoffRecentWeight"),value=$("wyckoffRecentWeightValue"); if(slider){slider.value=String(Number(config?.recentWeightPercent??data?.recentWeightPercent??60)); if(value)value.textContent=slider.value+'%';}
-  if(status?.state==='building'||status?.state==='collecting'||status?.state==='analyzing')$("wyckoffMsg").textContent=`${status.state==='collecting'?'جاري جمع البيانات':status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
+  const meta=$("wyckoffMeta"); if(meta){meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — نافذة ${Number(data.windowSessions||35)} جلسة — وزن آخر 10: ${Number(data.recentWeightPercent??config?.recentWeightPercent??60)}%`:'لا توجد نتائج بعد.';}
+  const slider=$("wyckoffRecentWeight"),value=$("wyckoffRecentWeightValue"); if(slider){slider.value=String(Number(config?.recentWeightPercent??data?.recentWeightPercent??60));if(value)value.textContent=slider.value+'%';}
+  if(status?.state==='building'||status?.state==='collecting'||status?.state==='analyzing')$("wyckoffMsg").textContent=`${status.state==='collecting'?'جاري جمع بيانات Wyckoff':status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
 }
-let wyckoffPollTimer=null;
+let wyckoffPollTimer=null,ertikazPollTimer=null;
 async function loadWyckoff(){
-  const msg=$("wyckoffMsg"); try{const d=await adminAction('wyckoff'); renderWyckoff(d.data,d.status,d.config); const active=d.status?.state==='building'||d.status?.state==='collecting'||d.status?.state==='analyzing'; if(active){msg.textContent=`${d.status.state==='collecting'?'جاري جمع البيانات':d.status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(d.status.processed||0)}/${Number(d.status.total||0)}…`; if(!wyckoffPollTimer){wyckoffPollTimer=setInterval(()=>loadWyckoff().catch(()=>{}),3000);}} else {if(wyckoffPollTimer){clearInterval(wyckoffPollTimer);wyckoffPollTimer=null;} if(d.status?.state==='ready')msg.textContent=`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`; else msg.textContent='لم يتم تشغيل النموذج بعد.';}}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج Wyckoff.';}}
-async function saveWyckoffSettings(){const slider=$("wyckoffRecentWeight"),msg=$("wyckoffMsg");if(!slider)return;try{const d=await adminAction("save-wyckoff-settings",{recentWeightPercent:Number(slider.value)});if(!d?.ok)throw Error(d?.error||"تعذر حفظ الوزن.");$("wyckoffRecentWeightValue").textContent=Number(d.config?.recentWeightPercent??slider.value)+"%";if(msg)msg.textContent="تم حفظ الوزن. شغّل جمع البيانات + تحليل النماذج لتطبيقه.";}catch(e){if(msg)msg.textContent=e.message||"تعذر حفظ الوزن.";}}
-async function collectModelDataNow(){const btn=$("collectModelData"),msg=$("wyckoffMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال دورة النماذج إلى GitHub Actions…";try{const d=await adminAction("collect-model-data");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل دورة النماذج.");msg.textContent="بدأت دورة النماذج في GitHub Actions. سيتم تحديث حالة الجمع والتحليل هنا تلقائيًا.";await sleep(1200);await loadWyckoff();}catch(e){msg.textContent=e.message||"تعذر تشغيل دورة النماذج.";}finally{btn.disabled=false;}}
+  const msg=$("wyckoffMsg"); try{const d=await adminAction('wyckoff');renderWyckoff(d.data,d.status,d.config);const active=['building','collecting','analyzing'].includes(d.status?.state);if(active){msg.textContent=`${d.status.state==='collecting'?'جاري جمع البيانات':d.status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(d.status.processed||0)}/${Number(d.status.total||0)}…`;if(!wyckoffPollTimer)wyckoffPollTimer=setInterval(()=>loadWyckoff().catch(()=>{}),3000);}else{if(wyckoffPollTimer){clearInterval(wyckoffPollTimer);wyckoffPollTimer=null;}msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل Wyckoff بعد.';}}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج Wyckoff.';}}
+async function saveWyckoffSettings(){const slider=$("wyckoffRecentWeight"),msg=$("wyckoffMsg");if(!slider)return;try{const d=await adminAction("save-wyckoff-settings",{recentWeightPercent:Number(slider.value)});if(!d?.ok)throw Error(d?.error||"تعذر حفظ الوزن.");$("wyckoffRecentWeightValue").textContent=Number(d.config?.recentWeightPercent??slider.value)+"%";if(msg)msg.textContent="تم حفظ الوزن. شغّل Wyckoff لتطبيقه.";}catch(e){if(msg)msg.textContent=e.message||"تعذر حفظ الوزن.";}}
+async function collectModelDataNow(){const btn=$("collectModelData"),msg=$("wyckoffMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال Wyckoff إلى GitHub Actions…";try{const d=await adminAction("collect-model-data");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل Wyckoff.");msg.textContent="بدأ تشغيل Wyckoff في GitHub Actions.";await sleep(1200);await loadWyckoff();}catch(e){msg.textContent=e.message||"تعذر تشغيل Wyckoff.";}finally{btn.disabled=false;}}
+function ertikazCheckHtml(c){
+  const ok=Boolean(c?.passed);const status=ok?'✓ متحقق':'✕ غير متحقق';let extra='';
+  if(c?.key==='splitDays'&&c?.milestones)extra=`<div class="ertikazMilestones"><span>20: ${c.milestones[20]?'✓':'—'}</span><span>30: ${c.milestones[30]?'✓':'—'}</span><span>50: ${c.milestones[50]?'✓':'—'}</span></div>`;
+  return `<div class="ertikazCheck ${ok?'ok':'no'}"><div><div class="ertikazCheckTitle">${escapeHtml(c?.label||'—')}</div><div class="ertikazCheckDetail">${escapeHtml(c?.detail||'—')}</div>${extra}</div><div class="ertikazBadge">${status}</div></div>`;
+}
+function openErtikazModal(row){
+  const m=$("ertikazModal"),title=$("ertikazModalTitle"),meta=$("ertikazModalMeta"),body=$("ertikazChecks");if(!m||!body)return;
+  title.textContent=`⚓ ارتكاز — ${row.ticker||'—'}`;
+  meta.textContent=`${row.passedCount||0}/${row.totalChecks||7} شروط متحققة — تاريخ التقسيم: ${row.splitDate||'غير متاح'} — آخر 4H: ${row.last4hDate||'غير متاح'}`;
+  body.innerHTML=(row.checks||[]).map(ertikazCheckHtml).join('')||'<div class="small">لا توجد تفاصيل.</div>';m.classList.add('show');
+}
+function closeErtikazModal(){$("ertikazModal")?.classList.remove('show');}
+function renderErtikaz(data,status){
+  const rows=Array.isArray(data?.records)?data.records:[],body=$("ertikazResults");if(!body)return;
+  const qualifiedRows=rows.filter(x=>x.qualified);
+  body.innerHTML=qualifiedRows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td><button type="button" class="ertikazLink ertikazQualified" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">⚓ ارتكاز</button></td><td>7/7</td><td>✓ مكتمل</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`).join('')||'<tr><td colspan="6">لا توجد أسهم أكملت الشروط السبعة حتى آخر تحليل.</td></tr>';
+  const meta=$("ertikazMeta");if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${Number(data.universeTickers||rows.length)} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
+  body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.ertikazTicker);if(row)openErtikazModal(row);}));
+  const active=['building','collecting','analyzing'].includes(status?.state);const msg=$("ertikazMsg");
+  if(active&&msg)msg.textContent=`${status.state==='collecting'?'جاري جمع بيانات 4H':status.state==='analyzing'?'جاري تطبيق شروط ارتكاز':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
+}
+async function loadErtikaz(){const msg=$("ertikazMsg");try{const d=await adminAction('ertikaz');renderErtikaz(d.data,d.status);const active=['building','collecting','analyzing'].includes(d.status?.state);if(active&&!ertikazPollTimer)ertikazPollTimer=setInterval(()=>loadErtikaz().catch(()=>{}),3000);if(!active&&ertikazPollTimer){clearInterval(ertikazPollTimer);ertikazPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل ارتكاز بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج ارتكاز.';}}
+async function collectErtikazNow(){const btn=$("collectErtikaz"),msg=$("ertikazMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال ارتكاز إلى GitHub Actions…";try{const d=await adminAction("collect-ertikaz");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل ارتكاز.");msg.textContent="بدأ تشغيل ارتكاز في GitHub Actions.";await sleep(1200);await loadErtikaz();}catch(e){msg.textContent=e.message||"تعذر تشغيل ارتكاز.";}finally{btn.disabled=false;}}
+function selectModelView(name){const w=$("modelViewWyckoff"),e=$("modelViewErtikaz");if(w)w.style.display=name==='wyckoff'?'block':'none';if(e)e.style.display=name==='ertikaz'?'block':'none';if(name==='wyckoff')loadWyckoff();else loadErtikaz();}
 async function showAdminPanel(name){
   if(name==="site"){
     if(!await unlockSiteSettings())return;
     if(!await loadSiteSettingsPanel())return;
   }
   $("adminHome").style.display="none";document.querySelectorAll(".adminPanel").forEach(x=>x.classList.remove("show"));$("adminPanel-"+name).classList.add("show");
-  if(name==="customers")loadAdminUsers();if(name==="support")loadAdminRequests("support","pending");if(name==="stats")loadSiteStats();if(name==="models")loadWyckoff();
+  if(name==="customers")loadAdminUsers();if(name==="support")loadAdminRequests("support","pending");if(name==="stats")loadSiteStats();if(name==="models"){selectModelView('wyckoff');}
 }
 document.querySelectorAll("[data-admin-panel]").forEach(b=>{
   b.addEventListener('click',async e=>{
@@ -1280,7 +1305,7 @@ document.querySelectorAll("[data-admin-panel]").forEach(b=>{
     await showAdminPanel(name);
   });
 });document.querySelectorAll(".adminBack").forEach(b=>b.onclick=showAdminHome);
-$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);$("saveWyckoffSettings")?.addEventListener("click",saveWyckoffSettings);$("wyckoffRecentWeight")?.addEventListener("input",e=>{const v=$("wyckoffRecentWeightValue");if(v)v.textContent=e.target.value+"%";});
+$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);$("saveWyckoffSettings")?.addEventListener("click",saveWyckoffSettings);$("wyckoffRecentWeight")?.addEventListener("input",e=>{const v=$("wyckoffRecentWeightValue");if(v)v.textContent=e.target.value+"%";});$("collectErtikaz")?.addEventListener("click",collectErtikazNow);$("refreshErtikaz")?.addEventListener("click",loadErtikaz);$("modelPickWyckoff")?.addEventListener("click",()=>selectModelView('wyckoff'));$("modelPickErtikaz")?.addEventListener("click",()=>selectModelView('ertikaz'));$("ertikazModalClose")?.addEventListener("click",closeErtikazModal);
 
 async function approveRequest(id){
   const btn=[...document.querySelectorAll('.approveReq')].find(x=>x.dataset.id===id);
