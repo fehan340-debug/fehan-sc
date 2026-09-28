@@ -66,22 +66,24 @@ export default async function(request){
     if(action==="refresh-borrow") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/update-short-background"});
     if(action==="refresh-massive-current") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-massive-current-worker"});
     if(action==="refresh-massive") return json(await dispatchMassiveWorker({source:'manual-admin-massive'}),202);
-    if(action==="collect-model-data") {
-      // Use the same GitHub credentials already configured in Netlify for the
-      // existing worker workflows. Do not require a second set of secrets just
-      // for Wyckoff.
+    if(action==="collect-model-data" || action==="collect-ertikaz") {
       const token=String(process.env.GITHUB_WORKER_TOKEN||"").trim();
       const repo=String(process.env.GITHUB_WORKER_REPO||"").trim();
       if(!token||!repo||!repo.includes("/")) return json({ok:false,error:"لم يتم إعداد GITHUB_WORKER_TOKEN و GITHUB_WORKER_REPO في Netlify."},500);
       const ref=String(process.env.GITHUB_WORKER_REF||"main").trim()||"main";
-      const response=await fetch(`https://api.github.com/repos/${repo}/actions/workflows/wyckoff-models.yml/dispatches`,{
+      const workflow=action==="collect-ertikaz"?'ertikaz-models.yml':'wyckoff-models.yml';
+      const label=action==="collect-ertikaz"?'ارتكاز':'Wyckoff';
+      const response=await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`,{
         method:"POST",
         headers:{"accept":"application/vnd.github+json","authorization":`Bearer ${token}`,"x-github-api-version":"2022-11-28","content-type":"application/json"},
         body:JSON.stringify({ref,inputs:{source:"admin-models",requested_at:new Date().toISOString()}})
       });
       if(!response.ok){const body=await response.text().catch(()=>"");return json({ok:false,error:`تعذر تشغيل GitHub Actions (${response.status}). ${body.slice(0,300)}`},502);}
-      return json({ok:true,queued:true,workflow:"Wyckoff Models",message:"تم إرسال دورة جمع البيانات وتحليل Wyckoff إلى GitHub Actions."},202);
+      return json({ok:true,queued:true,workflow,message:`تم إرسال دورة ${label} إلى GitHub Actions.`},202);
     }
+    if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus, readWyckoffConfig } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus(),config:await readWyckoffConfig()}); }
+    if(action==="save-wyckoff-settings") { const { saveWyckoffConfig } = await import("./wyckoff-core.mjs"); try{return json({ok:true,config:await saveWyckoffConfig(b.recentWeightPercent)});}catch(e){return json({ok:false,error:String(e?.message||e)},400);} }
+    if(action==="ertikaz") { const { readErtikaz, readErtikazStatus, getErtikazConfig } = await import("./ertikaz-core.mjs"); return json({ok:true,data:await readErtikaz(),status:await readErtikazStatus(),config:await getErtikazConfig()}); }
     if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus, readWyckoffConfig } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus(),config:await readWyckoffConfig()}); }
     if(action==="save-wyckoff-settings") { const { saveWyckoffConfig } = await import("./wyckoff-core.mjs"); try{return json({ok:true,config:await saveWyckoffConfig(b.recentWeightPercent)});}catch(e){return json({ok:false,error:String(e?.message||e)},400);} }
     if(action==="site-stats") {
