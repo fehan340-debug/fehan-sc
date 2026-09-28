@@ -1280,8 +1280,11 @@ function openErtikazModal(row){
 function closeErtikazModal(){$("ertikazModal")?.classList.remove('show');}
 function renderErtikaz(data,status){
   const rows=Array.isArray(data?.records)?data.records:[],body=$("ertikazResults");if(!body)return;
-  const qualifiedRows=rows.filter(x=>x.qualified);
-  body.innerHTML=qualifiedRows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td><button type="button" class="ertikazLink ertikazQualified" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">⚓ ارتكاز</button></td><td>7/7</td><td>✓ مكتمل</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`).join('')||'<tr><td colspan="6">لا توجد أسهم أكملت الشروط السبعة حتى آخر تحليل.</td></tr>';
+  body.innerHTML=rows.map(x=>{
+    const passed=Number(x.passedCount||0),total=Number(x.totalChecks||7)||7,qualified=passed===total;
+    const status=qualified?'✓ مكتمل':'غير مكتمل';
+    return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">⚓ ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${status}</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`;
+  }).join('')||'<tr><td colspan="7">لا توجد أسهم في الكاش المركزي حتى آخر تحليل.</td></tr>';
   const meta=$("ertikazMeta");if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${Number(data.universeTickers||rows.length)} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
   body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.ertikazTicker);if(row)openErtikazModal(row);}));
   const active=['building','collecting','analyzing'].includes(status?.state);const msg=$("ertikazMsg");
