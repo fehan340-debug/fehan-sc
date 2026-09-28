@@ -1279,14 +1279,30 @@ function openErtikazModal(row){
 }
 function closeErtikazModal(){$("ertikazModal")?.classList.remove('show');}
 function renderErtikaz(data,status){
-  const rows=Array.isArray(data?.records)?data.records:[],body=$("ertikazResults");if(!body)return;
+  const body=$("ertikazResults");if(!body)return;
+  const resultRows=Array.isArray(data?.records)?data.records:[];
+  // IMPORTANT: never filter by qualified. Every ticker in the analysis universe
+  // must be visible, even when it has only 1/7, 2/7, ... 6/7 conditions.
+  // If an older cached payload contains fewer records than its universe count,
+  // merge the central scanner cache so no stock disappears from the UI.
+  const byTicker=new Map(resultRows.map(x=>[String(x?.ticker||'').toUpperCase(),x]));
+  const cacheRows=Array.isArray(scannerCache)?scannerCache:[];
+  for(const c of cacheRows){
+    const t=String(c?.ticker||'').trim().toUpperCase();
+    if(!t||byTicker.has(t))continue;
+    byTicker.set(t,{version:1,ticker:t,name:c?.name||c?.companyName||c?.company_name||'',model:'ارتكاز',qualified:false,statusLabel:'لم تصل نتيجة التحليل الحالية',splitDate:c?.splitDate||'',passedCount:0,totalChecks:7,last4hDate:null,checks:[],error:'لم تصل نتيجة ارتكاز لهذا السهم بعد.'});
+  }
+  const rows=[...byTicker.values()].sort((a,b)=>String(a?.ticker||'').localeCompare(String(b?.ticker||'')));
   body.innerHTML=rows.map(x=>{
-    const passed=Number(x.passedCount||0),total=Number(x.totalChecks||7)||7,qualified=passed===total;
-    const status=qualified?'✓ مكتمل':'غير مكتمل';
-    return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">⚓ ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${status}</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`;
+    const passed=Math.max(0,Math.min(7,Number(x?.passedCount)||0)),total=7,qualified=passed===7;
+    const rowStatus=qualified?'✓ مكتمل':(passed>0?`✓ ${passed} شروط`:'غير مكتمل');
+    return `<tr data-ertikaz-row="1"><td><b>${escapeHtml(x?.ticker||'—')}</b></td><td>${escapeHtml(x?.name||x?.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x?.ticker||'')}">⚓ ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${rowStatus}</td><td>${escapeHtml(x?.splitDate||'—')}</td><td>${escapeHtml(x?.last4hDate||'—')}</td></tr>`;
   }).join('')||'<tr><td colspan="7">لا توجد أسهم في الكاش المركزي حتى آخر تحليل.</td></tr>';
-  const meta=$("ertikazMeta");if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${Number(data.universeTickers||rows.length)} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
-  body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.ertikazTicker);if(row)openErtikazModal(row);}));
+  const analyzed=Number(data?.universeTickers||resultRows.length);
+  const visible=rows.length;
+  const meta=$("ertikazMeta");
+  if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${analyzed} سهم — المعروض الآن ${visible} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
+  body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>String(x?.ticker||'').toUpperCase()===String(btn.dataset.ertikazTicker||'').toUpperCase());if(row)openErtikazModal(row);}));
   const active=['building','collecting','analyzing'].includes(status?.state);const msg=$("ertikazMsg");
   if(active&&msg)msg.textContent=`${status.state==='collecting'?'جاري جمع بيانات 4H':status.state==='analyzing'?'جاري تطبيق شروط ارتكاز':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
 }
