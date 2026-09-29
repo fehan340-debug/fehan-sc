@@ -66,13 +66,13 @@ export default async function(request){
     if(action==="refresh-borrow") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/update-short-background"});
     if(action==="refresh-massive-current") return json({ok:true,mode:"direct-worker",endpoint:"/.netlify/functions/scanner-massive-current-worker"});
     if(action==="refresh-massive") return json(await dispatchMassiveWorker({source:'manual-admin-massive'}),202);
-    if(action==="collect-model-data" || action==="collect-ertikaz") {
+    if(action==="collect-model-data" || action==="collect-ertikaz" || action==="collect-news") {
       const token=String(process.env.GITHUB_WORKER_TOKEN||"").trim();
       const repo=String(process.env.GITHUB_WORKER_REPO||"").trim();
       if(!token||!repo||!repo.includes("/")) return json({ok:false,error:"لم يتم إعداد GITHUB_WORKER_TOKEN و GITHUB_WORKER_REPO في Netlify."},500);
       const ref=String(process.env.GITHUB_WORKER_REF||"main").trim()||"main";
-      const workflow=action==="collect-ertikaz"?'ertikaz-models.yml':'wyckoff-models.yml';
-      const label=action==="collect-ertikaz"?'ارتكاز':'Wyckoff';
+      const workflow=action==="collect-ertikaz"?'ertikaz-models.yml':action==="collect-news"?'news-models.yml':'wyckoff-models.yml';
+      const label=action==="collect-ertikaz"?'ارتكاز':action==="collect-news"?'الأخبار':'Wyckoff';
       const response=await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`,{
         method:"POST",
         headers:{"accept":"application/vnd.github+json","authorization":`Bearer ${token}`,"x-github-api-version":"2022-11-28","content-type":"application/json"},
@@ -84,6 +84,18 @@ export default async function(request){
     if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus, readWyckoffConfig } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus(),config:await readWyckoffConfig()}); }
     if(action==="save-wyckoff-settings") { const { saveWyckoffConfig } = await import("./wyckoff-core.mjs"); try{return json({ok:true,config:await saveWyckoffConfig(b.recentWeightPercent)});}catch(e){return json({ok:false,error:String(e?.message||e)},400);} }
     if(action==="ertikaz") { const { readErtikaz, readErtikazStatus, getErtikazConfig } = await import("./ertikaz-core.mjs"); return json({ok:true,data:await readErtikaz(),status:await readErtikazStatus(),config:await getErtikazConfig()}); }
+    if(action==="news") {
+      const store=getDataStore();
+      const cached=await store.get("scanner-news-v1",{type:"json",consistency:"strong"}).catch(()=>null);
+      const pointer=await store.get("scanner-cache-pointer-v2",{type:"json",consistency:"strong"}).catch(()=>null);
+      const central=pointer?.key?await store.get(pointer.key,{type:"json",consistency:"strong"}).catch(()=>null):null;
+      const fallback=central?.ready&&Array.isArray(central.records)?central:await store.get("scanner-cache-v1",{type:"json",consistency:"strong"}).catch(()=>null);
+      const newsMap=new Map((Array.isArray(cached?.records)?cached.records:[]).map(x=>[String(x?.ticker||'').toUpperCase(),x]));
+      const records=(Array.isArray(fallback?.records)?fallback.records:[]).map(x=>{const t=String(x?.ticker||'').toUpperCase();const n=newsMap.get(t);return n?{...n,name:n.name||x.name||x.companyName||'',news:Array.isArray(n.news)?n.news:[]}:{ticker:t,name:x.name||x.companyName||'',news:[],updatedAt:null};}).filter(x=>x.ticker);
+      const data=cached?{...cached,records}: {version:1,ready:true,updatedAt:null,universeTickers:records.length,records,source:'Investing.com-ar-via-ScrapingAnt'};
+      const status=await store.get("scanner-news-status",{type:"json",consistency:"strong"}).catch(()=>null);
+      return json({ok:true,data,status});
+    }
     if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus, readWyckoffConfig } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus(),config:await readWyckoffConfig()}); }
     if(action==="save-wyckoff-settings") { const { saveWyckoffConfig } = await import("./wyckoff-core.mjs"); try{return json({ok:true,config:await saveWyckoffConfig(b.recentWeightPercent)});}catch(e){return json({ok:false,error:String(e?.message||e)},400);} }
     if(action==="site-stats") {

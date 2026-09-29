@@ -1279,36 +1279,39 @@ function openErtikazModal(row){
 }
 function closeErtikazModal(){$("ertikazModal")?.classList.remove('show');}
 function renderErtikaz(data,status){
-  const body=$("ertikazResults");if(!body)return;
-  const resultRows=Array.isArray(data?.records)?data.records:[];
-  // IMPORTANT: never filter by qualified. Every ticker in the analysis universe
-  // must be visible, even when it has only 1/7, 2/7, ... 6/7 conditions.
-  // If an older cached payload contains fewer records than its universe count,
-  // merge the central scanner cache so no stock disappears from the UI.
-  const byTicker=new Map(resultRows.map(x=>[String(x?.ticker||'').toUpperCase(),x]));
-  const cacheRows=Array.isArray(scannerCache)?scannerCache:[];
-  for(const c of cacheRows){
-    const t=String(c?.ticker||'').trim().toUpperCase();
-    if(!t||byTicker.has(t))continue;
-    byTicker.set(t,{version:1,ticker:t,name:c?.name||c?.companyName||c?.company_name||'',model:'ارتكاز',qualified:false,statusLabel:'لم تصل نتيجة التحليل الحالية',splitDate:c?.splitDate||'',passedCount:0,totalChecks:7,last4hDate:null,checks:[],error:'لم تصل نتيجة ارتكاز لهذا السهم بعد.'});
-  }
-  const rows=[...byTicker.values()].sort((a,b)=>String(a?.ticker||'').localeCompare(String(b?.ticker||'')));
+  const rows=Array.isArray(data?.records)?data.records:[],body=$("ertikazResults");if(!body)return;
   body.innerHTML=rows.map(x=>{
-    const passed=Math.max(0,Math.min(7,Number(x?.passedCount)||0)),total=7,qualified=passed===7;
-    const rowStatus=qualified?'✓ مكتمل':(passed>0?`✓ ${passed} شروط`:'غير مكتمل');
-    return `<tr data-ertikaz-row="1"><td><b>${escapeHtml(x?.ticker||'—')}</b></td><td>${escapeHtml(x?.name||x?.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x?.ticker||'')}">⚓ ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${rowStatus}</td><td>${escapeHtml(x?.splitDate||'—')}</td><td>${escapeHtml(x?.last4hDate||'—')}</td></tr>`;
+    const passed=Number(x.passedCount||0),total=Number(x.totalChecks||7)||7,qualified=passed===total;
+    const status=qualified?'✓ مكتمل':'غير مكتمل';
+    return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">⚓ ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${status}</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`;
   }).join('')||'<tr><td colspan="7">لا توجد أسهم في الكاش المركزي حتى آخر تحليل.</td></tr>';
-  const analyzed=Number(data?.universeTickers||resultRows.length);
-  const visible=rows.length;
-  const meta=$("ertikazMeta");
-  if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${analyzed} سهم — المعروض الآن ${visible} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
-  body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>String(x?.ticker||'').toUpperCase()===String(btn.dataset.ertikazTicker||'').toUpperCase());if(row)openErtikazModal(row);}));
+  const meta=$("ertikazMeta");if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${Number(data.universeTickers||rows.length)} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
+  body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.ertikazTicker);if(row)openErtikazModal(row);}));
   const active=['building','collecting','analyzing'].includes(status?.state);const msg=$("ertikazMsg");
   if(active&&msg)msg.textContent=`${status.state==='collecting'?'جاري جمع بيانات 4H':status.state==='analyzing'?'جاري تطبيق شروط ارتكاز':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
 }
 async function loadErtikaz(){const msg=$("ertikazMsg");try{const d=await adminAction('ertikaz');renderErtikaz(d.data,d.status);const active=['building','collecting','analyzing'].includes(d.status?.state);if(active&&!ertikazPollTimer)ertikazPollTimer=setInterval(()=>loadErtikaz().catch(()=>{}),3000);if(!active&&ertikazPollTimer){clearInterval(ertikazPollTimer);ertikazPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل ارتكاز بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج ارتكاز.';}}
 async function collectErtikazNow(){const btn=$("collectErtikaz"),msg=$("ertikazMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال ارتكاز إلى GitHub Actions…";try{const d=await adminAction("collect-ertikaz");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل ارتكاز.");msg.textContent="بدأ تشغيل ارتكاز في GitHub Actions.";await sleep(1200);await loadErtikaz();}catch(e){msg.textContent=e.message||"تعذر تشغيل ارتكاز.";}finally{btn.disabled=false;}}
-function selectModelView(name){const w=$("modelViewWyckoff"),e=$("modelViewErtikaz");if(w)w.style.display=name==='wyckoff'?'block':'none';if(e)e.style.display=name==='ertikaz'?'block':'none';if(name==='wyckoff')loadWyckoff();else loadErtikaz();}
+let newsPollTimer=null,newsRowsCache=[];
+function renderNews(data,status){
+  const rows=Array.isArray(data?.records)?data.records:[],body=$("newsResults"); if(!body)return;
+  newsRowsCache=rows;
+  body.innerHTML=rows.map(x=>{const count=Array.isArray(x.news)?x.news.length:0;return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="newsLink" data-news-ticker="${escapeHtml(x.ticker||'')}">أخبار</button></td><td>${count.toLocaleString('ar-SA')}</td><td>${escapeHtml(x.updatedAt?new Date(x.updatedAt).toLocaleString('ar-SA'):'—')}</td></tr>`;}).join('')||'<tr><td colspan="5">لا توجد أسهم في الكاش المركزي.</td></tr>';
+  const meta=$("newsMeta"); if(meta)meta.textContent=data?`آخر مزامنة: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — المصدر: Investing.com العربي`:'لا توجد نتائج بعد.';
+  body.querySelectorAll('[data-news-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.newsTicker);if(row)openNewsModal(row);}));
+  const active=['collecting','analyzing','building'].includes(status?.state),msg=$("newsMsg");
+  if(active&&msg)msg.textContent=`جاري جمع الأخبار: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
+}
+function openNewsModal(row){
+  let modal=$("newsModal");
+  if(!modal){modal=document.createElement('div');modal.id='newsModal';modal.className='testModal';modal.innerHTML='<div class="testBox" style="max-width:900px"><div class="testHead"><h2 id="newsModalTitle">📰 الأخبار</h2><button type="button" class="testClose" id="newsModalClose">×</button></div><div id="newsModalMeta" class="small"></div><div id="newsModalBody" style="margin-top:12px;max-height:65vh;overflow:auto"></div></div>';document.body.appendChild(modal);modal.onclick=e=>{if(e.target===modal)modal.classList.remove('show');};$("newsModalClose").onclick=()=>modal.classList.remove('show');}
+  $("newsModalTitle").textContent=`📰 ${row.ticker||'—'} — الأخبار`;$("newsModalMeta").textContent=`آخر 6 أشهر — ${Array.isArray(row.news)?row.news.length:0} خبر`;
+  const items=Array.isArray(row.news)?row.news:[];$("newsModalBody").innerHTML=items.length?items.map(n=>`<article class="adminBox" style="margin-bottom:10px"><div style="font-weight:900">${escapeHtml(n.titleAr||n.title||'—')}</div><div class="small" style="margin-top:5px">${escapeHtml(n.source||'Investing.com')} — ${escapeHtml(n.publishedAt||'—')} — <b>${escapeHtml(n.impactAr||'محايد')}</b></div><div style="margin-top:8px;line-height:1.8">${escapeHtml(n.summaryAr||'لا يوجد ملخص متاح.')}</div>${n.url?`<div style="margin-top:8px"><a href="${escapeHtml(n.url)}" target="_blank" rel="noopener noreferrer">فتح الخبر الأصلي</a></div>`:''}</article>`).join(''):'<div class="small">لا توجد أخبار محفوظة لهذا السهم.</div>';
+  modal.classList.add('show');
+}
+async function loadNews(){const msg=$("newsMsg");try{const d=await adminAction('news');renderNews(d.data,d.status);const active=['collecting','analyzing','building'].includes(d.status?.state);if(active&&!newsPollTimer)newsPollTimer=setInterval(()=>loadNews().catch(()=>{}),4000);if(!active&&newsPollTimer){clearInterval(newsPollTimer);newsPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل الأخبار بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل الأخبار.';}}
+async function collectNewsNow(){const btn=$("collectNews"),msg=$("newsMsg");if(!btn)return;btn.disabled=true;msg.textContent='تم إرسال الأخبار إلى GitHub Actions…';try{const d=await adminAction('collect-news');if(!d?.ok)throw Error(d?.error||'تعذر تشغيل الأخبار.');msg.textContent='بدأ جمع الأخبار في GitHub Actions.';await sleep(1200);await loadNews();}catch(e){msg.textContent=e.message||'تعذر تشغيل الأخبار.';}finally{btn.disabled=false;}}
+function selectModelView(name){const w=$("modelViewWyckoff"),e=$("modelViewErtikaz"),n=$("modelViewNews");if(w)w.style.display=name==='wyckoff'?'block':'none';if(e)e.style.display=name==='ertikaz'?'block':'none';if(n)n.style.display=name==='news'?'block':'none';if(name==='wyckoff')loadWyckoff();else if(name==='ertikaz')loadErtikaz();else loadNews();}
 async function showAdminPanel(name){
   if(name==="site"){
     if(!await unlockSiteSettings())return;
@@ -1324,7 +1327,7 @@ document.querySelectorAll("[data-admin-panel]").forEach(b=>{
     await showAdminPanel(name);
   });
 });document.querySelectorAll(".adminBack").forEach(b=>b.onclick=showAdminHome);
-$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);$("saveWyckoffSettings")?.addEventListener("click",saveWyckoffSettings);$("wyckoffRecentWeight")?.addEventListener("input",e=>{const v=$("wyckoffRecentWeightValue");if(v)v.textContent=e.target.value+"%";});$("collectErtikaz")?.addEventListener("click",collectErtikazNow);$("refreshErtikaz")?.addEventListener("click",loadErtikaz);$("modelPickWyckoff")?.addEventListener("click",()=>selectModelView('wyckoff'));$("modelPickErtikaz")?.addEventListener("click",()=>selectModelView('ertikaz'));$("ertikazModalClose")?.addEventListener("click",closeErtikazModal);
+$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);$("saveWyckoffSettings")?.addEventListener("click",saveWyckoffSettings);$("wyckoffRecentWeight")?.addEventListener("input",e=>{const v=$("wyckoffRecentWeightValue");if(v)v.textContent=e.target.value+"%";});$("collectErtikaz")?.addEventListener("click",collectErtikazNow);$("refreshErtikaz")?.addEventListener("click",loadErtikaz);$("collectNews")?.addEventListener("click",collectNewsNow);$("refreshNews")?.addEventListener("click",loadNews);$("modelPickWyckoff")?.addEventListener("click",()=>selectModelView('wyckoff'));$("modelPickErtikaz")?.addEventListener("click",()=>selectModelView('ertikaz'));$("modelPickNews")?.addEventListener("click",()=>selectModelView('news'));$("ertikazModalClose")?.addEventListener("click",closeErtikazModal);
 
 async function approveRequest(id){
   const btn=[...document.querySelectorAll('.approveReq')].find(x=>x.dataset.id===id);

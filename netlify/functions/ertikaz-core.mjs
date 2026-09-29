@@ -175,16 +175,5 @@ export async function runErtikaz({force=false}={}){
   await store.setJSON(RESULT_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',mode:'analysis',date:today,completedAt:payload.updatedAt,total:results.length,processed:results.length,qualifiedCount:payload.qualifiedCount,collection:{updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});
   return{ok:true,date:today,total:results.length,processed:results.length,qualified:payload.qualifiedCount,updatedAt:payload.updatedAt};
 }
-export async function readErtikaz(){
-  const payload=await getDataStore().get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);
-  if(!payload)return null;
-  // The result set is the full analysis universe. qualifiedCount is only a
-  // summary and must never be used to filter records.
-  if(Array.isArray(payload.records)){
-    payload.records=payload.records.map(x=>({...x,totalChecks:7,passedCount:Math.max(0,Math.min(7,Number(x?.passedCount)||0))}));
-    payload.universeTickers=Number(payload.universeTickers||payload.records.length);
-    payload.qualifiedCount=payload.records.filter(x=>Boolean(x?.qualified)||Number(x?.passedCount)===7).length;
-  }
-  return payload;
-}
+export async function readErtikaz(){return await getDataStore().get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);}
 export async function readErtikazStatus(){return await getDataStore().get(STATUS_KEY,{type:'json',consistency:'strong'}).catch(()=>null);}
