@@ -89,8 +89,35 @@ export async function runNews({force=false}={}){
   if(!force&&existingStatus?.date===today&&existingStatus?.state==='ready'&&!hasNewTicker)return{ok:true,skipped:true,reason:'already-completed-today',date:today};
   if(!force&&!atMarketOpenET())return{ok:true,skipped:true,reason:'not-market-open-window',date:today};
   const cutoff=new Date(Date.now()-183*86400000);
-  const records=[];let processed=0,initial=0,incremental=0,failed=0,added=0;await store.setJSON(STATUS_KEY,{state:'collecting',date:today,total:tickers.length,processed:0,initial:0,incremental:0,failed:0,added:0});
-  for(const ticker of tickers){const row=byTicker.get(ticker)||{},old=oldMap.get(ticker);try{const isInitial=!old||!Array.isArray(old.news)||!old.news.length,r=await collectTicker(ticker,row,old,cutoff,isInitial);records.push(r);if(isInitial)initial++;else incremental++;added+=Number(r.addedCount||0);}catch(e){failed++;records.push({...old,ticker,name:row?.name||row?.companyName||'',news:Array.isArray(old?.news)?old.news:[],error:String(e?.message||e),updatedAt:new Date().toISOString()});}processed++;await store.setJSON(STATUS_KEY,{state:'collecting',date:today,total:tickers.length,processed,initial,incremental,failed,added});await sleep(250);}
+  // Fetch several tickers concurrently. The old implementation awaited every
+  // ticker serially, so one slow ScrapingAnt/Investing.com request blocked the
+  // entire universe and made the UI appear to finish roughly one stock every
+  // couple of minutes. Keep a bounded pool so we are faster without creating
+  // an uncontrolled burst against the scraper.
+  const NEWS_CONCURRENCY=Math.max(1,Math.min(8,Number(env('NEWS_CONCURRENCY'))||6));
+  const records=[];let nextIndex=0,processed=0,initial=0,incremental=0,failed=0,added=0;
+  await store.setJSON(STATUS_KEY,{state:'collecting',date:today,total:tickers.length,processed:0,initial:0,incremental:0,failed:0,added:0,concurrency:NEWS_CONCURRENCY});
+
+  const worker=async()=>{
+    while(true){
+      const i=nextIndex++;
+      if(i>=tickers.length)return;
+      const ticker=tickers[i],row=byTicker.get(ticker)||{},old=oldMap.get(ticker);
+      try{
+        const isInitial=!old||!Array.isArray(old.news)||!old.news.length;
+        const r=await collectTicker(ticker,row,old,cutoff,isInitial);
+        records.push(r);
+        if(isInitial)initial++;else incremental++;
+        added+=Number(r.addedCount||0);
+      }catch(e){
+        failed++;
+        records.push({...old,ticker,name:row?.name||row?.companyName||'',news:Array.isArray(old?.news)?old.news:[],error:String(e?.message||e),updatedAt:new Date().toISOString()});
+      }
+      processed++;
+      await store.setJSON(STATUS_KEY,{state:'collecting',date:today,total:tickers.length,processed,initial,incremental,failed,added,concurrency:NEWS_CONCURRENCY});
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(NEWS_CONCURRENCY,tickers.length)},worker));
   const payload={version:1,ready:true,date:today,updatedAt:new Date().toISOString(),universeTickers:records.length,records:records.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'Investing.com-ar-via-ScrapingAnt',lookbackDays:183};await store.setJSON(NEWS_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',date:today,completedAt:payload.updatedAt,total:tickers.length,processed,initial,incremental,failed,added,universeTickers:records.length});return{ok:true,date:today,total:tickers.length,processed,initial,incremental,failed,added};
 }
 runNews({force:env('FORCE_NEWS_RUN')==='true'}).then(r=>{console.log(JSON.stringify(r,null,2));if(!r?.ok&&!r?.skipped)process.exit(1);}).catch(e=>{console.error(e);process.exit(1);});

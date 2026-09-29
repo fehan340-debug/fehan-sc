@@ -75,22 +75,31 @@ export function detectErtikazSequence(bars,splitDate){
   const b=bars.filter(x=>x.date>=splitDate).sort((a,z)=>a.t-z.t);
   if(b.length<20)return {base:null,resistance:null,support:null,liquidity:null};
   const dates=[...new Set(b.map(x=>x.date))].sort();
-  let base=null;
-  // A base is a confirmed 4H swing low: it must be no higher than the 3 bars
-  // before and after it, and must subsequently hold for five real trading sessions.
-  for(let i=3;i<b.length-3;i++){
-    const candidate=b[i];
-    if(candidate.date<splitDate)continue;
-    const left=b.slice(i-3,i).every(x=>x.low>=candidate.low);
-    const right=b.slice(i+1,i+4).every(x=>x.low>=candidate.low);
-    if(!left||!right)continue;
-    const holdDates=dates.filter(d=>d>candidate.date).slice(0,5);
-    if(holdDates.length<5)continue;
-    const holdBars=b.filter(x=>x.date>candidate.date&&x.date<=holdDates.at(-1));
-    if(!holdBars.length||holdBars.some(x=>x.low<candidate.low))continue;
-    base={price:candidate.low,date:candidate.date,index:i,holdThrough:holdDates.at(-1),holdSessions:holdDates.length};
-    break;
+  // The base MUST be the absolute lowest 4H low in the analysis window.
+  // Do not pick the first local/swing low that happens to satisfy the
+  // five-session condition; doing that can lock the model onto a higher
+  // low while a lower 4H candle exists elsewhere in the same window.
+  // If several 4H candles share the exact same lowest low, use the earliest
+  // candle so the sequence remains deterministic.
+  let candidate=null,candidateIndex=-1;
+  for(let i=0;i<b.length;i++){
+    const x=b[i];
+    if(!candidate || x.low<candidate.low || (x.low===candidate.low && x.t<candidate.t)){
+      candidate=x;
+      candidateIndex=i;
+    }
   }
+  if(!candidate)return {base:null,resistance:null,support:null,liquidity:null};
+
+  // Once the absolute low is identified, the five-session hold is evaluated
+  // from that exact low. A lower low during those five sessions invalidates
+  // the hold rather than causing the algorithm to silently choose another
+  // (higher) base.
+  const holdDates=dates.filter(d=>d>candidate.date).slice(0,5);
+  if(holdDates.length<5)return {base:null,resistance:null,support:null,liquidity:null};
+  const holdBars=b.filter(x=>x.date>candidate.date&&x.date<=holdDates.at(-1));
+  if(!holdBars.length||holdBars.some(x=>x.low<candidate.low))return {base:null,resistance:null,support:null,liquidity:null};
+  const base={price:candidate.low,date:candidate.date,index:candidateIndex,holdThrough:holdDates.at(-1),holdSessions:holdDates.length};
   if(!base)return {base:null,resistance:null,support:null,liquidity:null};
   const resistanceLow=base.price*1.15,resistanceHigh=base.price*1.25;
   const afterHold=b.filter(x=>x.date>base.holdThrough);
