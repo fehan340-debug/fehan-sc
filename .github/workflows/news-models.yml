@@ -1,0 +1,53 @@
+name: News Models
+
+on:
+  # GitHub cron is UTC. The workflow checks several times around the US open
+  # so it can run after the central split/universe cache is refreshed. The
+  # worker itself verifies New York time and deduplicates the daily run.
+  schedule:
+    - cron: '30,45 13 * * 1-5'
+    - cron: '0,15,30,45 14 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Trigger source
+        required: false
+        default: manual-admin
+      requested_at:
+        description: Trigger timestamp
+        required: false
+        default: ""
+
+concurrency:
+  group: news-models
+  cancel-in-progress: false
+
+jobs:
+  collect-and-cache-news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_TABLE: scanner_worker_store
+      FORCE_NEWS_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Validate required secrets
+        run: |
+          test -n "$SCRAPINGANT_API_KEY" || (echo "Missing SCRAPINGANT_API_KEY" && exit 1)
+          test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
+          test -n "$SUPABASE_KEY" || (echo "Missing SUPABASE_KEY" && exit 1)
+          echo "News collection secrets are present."
+      - name: Collect Arabic stock news and update cache
+        run: node worker/news-worker.mjs
