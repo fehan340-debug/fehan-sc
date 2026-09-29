@@ -6,13 +6,24 @@ const CACHE_KEY = 'scanner-cache-v1';
 const POINTER_KEY = 'scanner-cache-pointer-v2';
 const SCRAPE_URL = 'https://api.scrapingant.com/v2/general';
 const INVESTING_SEARCH = 'https://sa.investing.com/search/?q=';
-const INITIAL_MAX_PAGES = 40;
+const INITIAL_MAX_PAGES = 6;
 
 const env = name => String(process.env[name] || '').trim();
 const cleanTicker = v => String(v || '').trim().toUpperCase().replace(/[^A-Z0-9._-]/g, '');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function stripHtml(s){return String(s||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/\s+/g,' ').trim();}
-function absoluteUrl(href){try{return new URL(href,'https://sa.investing.com').toString();}catch{return null;}}
+function absoluteUrl(href){
+  try{
+    let h=String(href||'').replace(/\\\//g,'/').replace(/&amp;/gi,'&').trim();
+    if(!h)return null;
+    return new URL(h,'https://sa.investing.com').toString();
+  }catch{return null;}
+}
+function normalizeHref(href){
+  const u=absoluteUrl(href);
+  if(!u)return null;
+  try{const x=new URL(u);return x.pathname.replace(/\\/g,'/')+(x.search||'');}catch{return null;}
+}
 function parseDate(text, fallback){
   const s=String(text||'');
   const months={يناير:0,فبراير:1,مارس:2,أبريل:3,ابريل:3,مايو:4,يونيو:5,يوليو:6,أغسطس:7,اغسطس:7,سبتمبر:8,أكتوبر:9,اكتوبر:9,نوفمبر:10,ديسمبر:11,January:0,February:1,March:2,April:3,May:4,June:5,July:6,August:7,September:8,October:9,November:10,December:11};
@@ -43,22 +54,49 @@ async function scrape(url){
 }
 async function findInvestingNewsUrl(ticker){
   const html=await scrape(INVESTING_SEARCH+encodeURIComponent(ticker));
-  const links=[...html.matchAll(/href=["'](\/equities\/[^"']+)["']/gi)].map(m=>m[1].split('#')[0].split('?')[0]);
-  const chosen=links.find(x=>/-news(?:[\/?]|$)/i.test(x))||links.find(x=>/\/equities\//i.test(x));
+  const links=[];
+  const re=/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  for(const m of html.matchAll(re)){
+    const path=normalizeHref(m[1]);
+    if(path&&/^\/equities\//i.test(path))links.push(path.split('#')[0].split('?')[0]);
+  }
+  const unique=[...new Set(links)];
+  const chosen=unique.find(x=>/-news(?:\/\d+)?$/i.test(x))||unique.find(x=>/-company-profile$/i.test(x))||unique.find(x=>/^\/equities\//i.test(x));
   if(!chosen)return null;
   let path=chosen.replace(/-company-profile$/i,'-news').replace(/\/$/,'');
   if(!/-news(?:\/\d+)?$/i.test(path))path+='-news';
   return absoluteUrl(path);
 }
 function extractArticles(html,fallbackDate){
-  const out=new Map(),re=/<a[^>]+href=["'](\/news\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  for(const m of html.matchAll(re)){
-    const url=absoluteUrl(m[1]),title=stripHtml(m[2]);if(!url||!title||title.length<8)continue;
-    if(/^(أخبار|تحليلات|المزيد|قراءة المزيد|إعلانات)$/i.test(title))continue;
-    const idx=m.index??0,around=stripHtml(html.slice(Math.max(0,idx-180),Math.min(html.length,idx+1800)));
-    const dt=parseDate(around,fallbackDate),sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),source=sourceMatch?sourceMatch[1].trim():'Investing.com';
-    let summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
-    const key=url.split('?')[0];if(!out.has(key))out.set(key,{url,title,summary,publishedDate:(dt||fallbackDate).toISOString().slice(0,10),source});
+  const out=new Map();
+  const source=String(html||'').replace(/\\u002F/g,'/').replace(/\\\//g,'/').replace(/&quot;/gi,'"').replace(/&#x2F;/gi,'/');
+  const add=(href,title,around)=>{
+    const url=absoluteUrl(href),cleanTitle=stripHtml(title); if(!url||!cleanTitle||cleanTitle.length<8)return;
+    let path='';try{path=new URL(url).pathname;}catch{return;}
+    if(!/^\/news\//i.test(path))return;
+    if(/^(أخبار|تحليلات|المزيد|قراءة المزيد|إعلانات|الكل|عام)$/i.test(cleanTitle))return;
+    const block=stripHtml(around||'');
+    const dt=parseDate(block,fallbackDate),sourceMatch=block.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),newsSource=sourceMatch?sourceMatch[1].trim():'Investing.com';
+    const summary=block.replace(cleanTitle,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
+    const key=url.split('?')[0];
+    if(!out.has(key))out.set(key,{url,title:cleanTitle,summary,publishedDate:(dt||fallbackDate).toISOString().slice(0,10),source:newsSource});
+  };
+  // Primary: normal HTML anchors. The previous parser only accepted relative
+  // /news/ hrefs and could return zero when ScrapingAnt/browser emitted absolute
+  // or escaped Investing URLs.
+  const anchorRe=/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\\s\\S]*?)<\/a>/gi;
+  for(const m of source.matchAll(anchorRe)){
+    const idx=m.index??0;
+    add(m[1],m[2],source.slice(Math.max(0,idx-220),Math.min(source.length,idx+2200)));
+  }
+  // Fallback: some rendered/serialized responses expose the article URL but
+  // not the surrounding anchor. Use the nearby text as the title candidate.
+  const urlRe=/(?:https?:\/\/sa\.investing\.com)?\/news\/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+/gi;
+  for(const m of source.matchAll(urlRe)){
+    const idx=m.index??0,aroundRaw=source.slice(Math.max(0,idx-500),Math.min(source.length,idx+1800));
+    const around=stripHtml(aroundRaw).replace(/\\s+/g,' ').trim();
+    const title=around.split(/(?:بواسطة|By)\\s+/i)[0].split(/(?:\\.|\\u2022|•)\\s*/).pop()?.trim()||around.slice(0,180);
+    add(m[0],title,around);
   }
   return [...out.values()];
 }
@@ -68,7 +106,7 @@ async function collectTicker(ticker,row,old,cutoff,isInitial){
   if(!newsUrl)return{...old,ticker,name:row?.name||row?.companyName||'',news:Array.isArray(old?.news)?old.news:[],newsUrl:null,error:'لم يتم العثور على صفحة أخبار Investing.com لهذا السهم.',updatedAt:new Date().toISOString()};
   const map=new Map((Array.isArray(old?.news)?old.news:[]).map(x=>[x.url,x]));const fallback=new Date();let pages=0,addedCount=0;
   for(let page=1;page<=(isInitial?INITIAL_MAX_PAGES:1);page++){
-    const html=await scrape(pageUrl(newsUrl,page)),articles=extractArticles(html,fallback);pages++;if(!articles.length)break;let oldEnough=0;
+    const html=await scrape(pageUrl(newsUrl,page)),articles=extractArticles(html,fallback);pages++;if(!articles.length){ if(page===1&&Array.isArray(old?.news)&&old.news.length) break; if(page===1) throw new Error('تم الوصول إلى صفحة أخبار Investing.com لكن تعذر استخراج عناصر الأخبار منها.'); break; }let oldEnough=0;
     for(const a of articles){const d=new Date(a.publishedDate+'T12:00:00Z');if(d<cutoff){oldEnough++;continue;}if(map.has(a.url))continue;
       const impact=classifyImpact(`${a.title} ${a.summary}`);map.set(a.url,{id:Buffer.from(a.url).toString('base64url').slice(0,64),url:a.url,title:a.title,titleAr:a.title,summary:a.summary,summaryAr:a.summary,source:a.source||'Investing.com',publishedAt:a.publishedDate,language:'ar',impactAr:impact,addedAt:new Date().toISOString()});addedCount++;
     }
@@ -86,7 +124,8 @@ export async function runNews({force=false}={}){
   if(!tickers.length)return{ok:false,error:'لا توجد أسهم في الكاش المركزي.'};
   const previous=await store.get(NEWS_KEY).catch(()=>null)||{version:1,records:[]},oldRecords=Array.isArray(previous.records)?previous.records:[],oldMap=new Map(oldRecords.map(x=>[cleanTicker(x?.ticker),x])),hasNewTicker=tickers.some(t=>!oldMap.has(t));
   const existingStatus=await store.get(STATUS_KEY).catch(()=>null);
-  if(!force&&existingStatus?.date===today&&existingStatus?.state==='ready'&&!hasNewTicker)return{ok:true,skipped:true,reason:'already-completed-today',date:today};
+  const previousRunHadErrors=Number(existingStatus?.failed||0)>0;
+  if(!force&&existingStatus?.date===today&&existingStatus?.state==='ready'&&!hasNewTicker&&!previousRunHadErrors)return{ok:true,skipped:true,reason:'already-completed-today',date:today};
   if(!force&&!atMarketOpenET())return{ok:true,skipped:true,reason:'not-market-open-window',date:today};
   const cutoff=new Date(Date.now()-183*86400000);
   // Fetch several tickers concurrently. The old implementation awaited every
@@ -118,6 +157,7 @@ export async function runNews({force=false}={}){
     }
   };
   await Promise.all(Array.from({length:Math.min(NEWS_CONCURRENCY,tickers.length)},worker));
-  const payload={version:1,ready:true,date:today,updatedAt:new Date().toISOString(),universeTickers:records.length,records:records.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'Investing.com-ar-via-ScrapingAnt',lookbackDays:183};await store.setJSON(NEWS_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',date:today,completedAt:payload.updatedAt,total:tickers.length,processed,initial,incremental,failed,added,universeTickers:records.length});return{ok:true,date:today,total:tickers.length,processed,initial,incremental,failed,added};
+  const safeRecords=records.map(r=>{const old=oldMap.get(r.ticker); if((Array.isArray(r.news)?r.news.length:0)===0&&Array.isArray(old?.news)&&old.news.length&&!r.error)return {...r,news:old.news,addedCount:0,preservedPreviousNews:true}; return r;});
+  const payload={version:1,ready:true,date:today,updatedAt:new Date().toISOString(),universeTickers:safeRecords.length,records:safeRecords.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'Investing.com-ar-via-ScrapingAnt',lookbackDays:183};await store.setJSON(NEWS_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',date:today,completedAt:payload.updatedAt,total:tickers.length,processed,initial,incremental,failed,added,universeTickers:records.length});return{ok:true,date:today,total:tickers.length,processed,initial,incremental,failed,added};
 }
 runNews({force:env('FORCE_NEWS_RUN')==='true'}).then(r=>{console.log(JSON.stringify(r,null,2));if(!r?.ok&&!r?.skipped)process.exit(1);}).catch(e=>{console.error(e);process.exit(1);});
