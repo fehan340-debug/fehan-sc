@@ -4,12 +4,14 @@
 const supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '').replace(/\/rest\/v1$/i, '');
 const supabaseKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '').trim();
 const table = String(process.env.SUPABASE_TABLE || 'scanner_worker_store').trim();
+const siteSettingsTable = String(process.env.SUPABASE_SITE_SETTINGS_TABLE || 'app_site_settings_store').trim();
 
 function assertSupabase() {
   if (!supabaseUrl || !supabaseKey) {
     throw new Error('SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY (أو SUPABASE_KEY) مطلوبان للـ GitHub Actions Worker.');
   }
   if (!table) throw new Error('SUPABASE_TABLE غير صالح.');
+  if (!siteSettingsTable) throw new Error('SUPABASE_SITE_SETTINGS_TABLE غير صالح.');
 }
 
 function encode(value) {
@@ -18,20 +20,27 @@ function encode(value) {
 
 async function request(path, options = {}) {
   assertSupabase();
-  const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
-    ...options,
-    headers: {
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
+  let lastError = '';
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
+      ...options,
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      }
+    });
+    const body = await response.text();
+    if (response.ok) return body ? JSON.parse(body) : null;
+    lastError = `Supabase HTTP ${response.status}: ${body.slice(0, 1000)}`;
+    if ([408,429,500,502,503,504].includes(response.status) && attempt < 3) {
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+      continue;
     }
-  });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`Supabase HTTP ${response.status}: ${body.slice(0, 1000)}`);
+    throw new Error(lastError);
   }
-  return body ? JSON.parse(body) : null;
+  throw new Error(lastError || 'Supabase request failed.');
 }
 
 export const store = {
@@ -55,6 +64,11 @@ export const store = {
 
   async delete(key) {
     await request(`${table}?key=eq.${encode(key)}`, { method: 'DELETE' });
+  },
+
+  async getSiteSettings() {
+    const rows = await request(`${siteSettingsTable}?select=key,value&key=eq.site-settings&limit=1`);
+    return rows?.[0]?.value ?? null;
   }
 };
 

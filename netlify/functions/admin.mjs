@@ -39,6 +39,9 @@ export default async function(request){
         siteModeMessage:String(b.siteModeMessage||defaultMsg).trim(),
         autoUpdateEnabled:b.autoUpdateEnabled!==undefined?Boolean(b.autoUpdateEnabled):(b.auto_update_enabled!==undefined?Boolean(b.auto_update_enabled):current.autoUpdateEnabled),
         auto_update_enabled:b.auto_update_enabled!==undefined?Boolean(b.auto_update_enabled):(b.autoUpdateEnabled!==undefined?Boolean(b.autoUpdateEnabled):current.auto_update_enabled),
+        wyckoffAutoUpdateEnabled:b.wyckoffAutoUpdateEnabled!==undefined?Boolean(b.wyckoffAutoUpdateEnabled):current.wyckoffAutoUpdateEnabled,
+        ertikazAutoUpdateEnabled:b.ertikazAutoUpdateEnabled!==undefined?Boolean(b.ertikazAutoUpdateEnabled):current.ertikazAutoUpdateEnabled,
+        newsAutoUpdateEnabled:b.newsAutoUpdateEnabled!==undefined?Boolean(b.newsAutoUpdateEnabled):current.newsAutoUpdateEnabled,
         subscriptionRequestsEnabled:b.subscriptionRequestsEnabled!==undefined?Boolean(b.subscriptionRequestsEnabled):current.subscriptionRequestsEnabled
       })});
     }
@@ -95,6 +98,12 @@ export default async function(request){
       const data=cached?{...cached,records}: {version:1,ready:true,updatedAt:null,universeTickers:records.length,records,source:'Investing.com-ar-via-ScrapingAnt'};
       const status=await store.get("scanner-news-status",{type:"json",consistency:"strong"}).catch(()=>null);
       return json({ok:true,data,status});
+    }
+    if(action==="news-detail") {
+      const ticker=String(b.ticker||'').trim().toUpperCase().replace(/[^A-Z0-9._-]/g,'');
+      if(!ticker)return json({error:"رمز السهم مطلوب."},400);
+      const detail=await getDataStore().get(`scanner-news-ticker-v2:${ticker}`,{type:"json",consistency:"strong"}).catch(()=>null);
+      return json({ok:true,data:detail||{ticker,news:[]}});
     }
     if(action==="wyckoff") { const { readWyckoff, readWyckoffStatus, readWyckoffConfig } = await import("./wyckoff-core.mjs"); return json({ok:true,data:await readWyckoff(),status:await readWyckoffStatus(),config:await readWyckoffConfig()}); }
     if(action==="save-wyckoff-settings") { const { saveWyckoffConfig } = await import("./wyckoff-core.mjs"); try{return json({ok:true,config:await saveWyckoffConfig(b.recentWeightPercent)});}catch(e){return json({ok:false,error:String(e?.message||e)},400);} }
