@@ -31,6 +31,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SUPABASE_TABLE: scanner_worker_store
+      SUPABASE_SITE_SETTINGS_TABLE: app_site_settings_store
       SUPABASE_SCANNER_TABLE: scanner_worker_store
     steps:
       - name: Checkout
