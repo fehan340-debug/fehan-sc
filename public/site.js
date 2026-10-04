@@ -1311,7 +1311,7 @@ function renderErtikaz(data,status){
 }
 async function loadErtikaz(){const msg=$("ertikazMsg");try{const d=await adminAction('ertikaz');renderErtikaz(d.data,d.status);const active=['building','collecting','analyzing'].includes(d.status?.state);if(active&&!ertikazPollTimer)ertikazPollTimer=setInterval(()=>loadErtikaz().catch(()=>{}),3000);if(!active&&ertikazPollTimer){clearInterval(ertikazPollTimer);ertikazPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل ارتكاز بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج ارتكاز.';}}
 async function collectErtikazNow(){const btn=$("collectErtikaz"),msg=$("ertikazMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال ارتكاز إلى GitHub Actions…";try{const d=await adminAction("collect-ertikaz");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل ارتكاز.");msg.textContent="بدأ تشغيل ارتكاز في GitHub Actions.";await sleep(1200);await loadErtikaz();}catch(e){msg.textContent=e.message||"تعذر تشغيل ارتكاز.";}finally{btn.disabled=false;}}
-let newsPollTimer=null,newsRowsCache=[];
+let newsPollTimer=null,newsRowsCache=[],newsModalPollTimer=null,newsModalTicker='';
 function renderNews(data,status){
   const rows=Array.isArray(data?.records)?data.records:[],body=$("newsResults"); if(!body)return;
   newsRowsCache=rows;
@@ -1323,14 +1323,22 @@ function renderNews(data,status){
 }
 function openNewsModal(row){
   let modal=$("newsModal");
-  if(!modal){modal=document.createElement('div');modal.id='newsModal';modal.className='testModal';modal.innerHTML='<div class="testBox" style="max-width:900px"><div class="testHead"><h2 id="newsModalTitle">📰 الأخبار</h2><button type="button" class="testClose" id="newsModalClose">×</button></div><div id="newsModalMeta" class="small"></div><div id="newsModalBody" style="margin-top:12px;max-height:65vh;overflow:auto"></div></div>';document.body.appendChild(modal);modal.onclick=e=>{if(e.target===modal)modal.classList.remove('show');};$("newsModalClose").onclick=()=>modal.classList.remove('show');}
+  if(!modal){modal=document.createElement('div');modal.id='newsModal';modal.className='testModal';modal.innerHTML='<div class="testBox" style="max-width:900px"><div class="testHead"><h2 id="newsModalTitle">📰 الأخبار</h2><button type="button" class="testClose" id="newsModalClose">×</button></div><div id="newsModalMeta" class="small"></div><div id="newsModalBody" style="margin-top:12px;max-height:65vh;overflow:auto"></div></div>';document.body.appendChild(modal);modal.onclick=e=>{if(e.target===modal){modal.classList.remove('show');if(newsModalPollTimer){clearInterval(newsModalPollTimer);newsModalPollTimer=null;}}};$("newsModalClose").onclick=()=>{modal.classList.remove('show');if(newsModalPollTimer){clearInterval(newsModalPollTimer);newsModalPollTimer=null;}};}
   const ticker=String(row?.ticker||'').toUpperCase();
+  newsModalTicker=ticker;
   $("newsModalTitle").textContent=`📰 ${ticker||'—'} — الأخبار`;$('newsModalMeta').textContent='جاري تحميل الأخبار المحفوظة…';$('newsModalBody').innerHTML='<div class="small">جاري قراءة كاش الأخبار لهذا السهم…</div>';modal.classList.add('show');
-  adminAction('news-detail',{ticker}).then(d=>{
-    const detail=d.data||{},items=Array.isArray(detail.news)?detail.news:[];
-    $('newsModalMeta').textContent=`آخر 6 أشهر — ${items.length.toLocaleString('ar-SA')} خبر${detail.coverageComplete?' — مكتملة الفترة':' — الفترة غير مكتملة'}`;
-    $('newsModalBody').innerHTML=items.length?items.map(n=>`<article class="adminBox" style="margin-bottom:10px"><div style="font-weight:900">${escapeHtml(n.titleAr||n.title||'—')}</div><div class="small" style="margin-top:5px">${escapeHtml(n.source||'Investing.com')} — ${escapeHtml(n.publishedAt||'—')} — <b>${escapeHtml(n.impactAr||'محايد')}</b></div><div style="margin-top:8px;line-height:1.8">${escapeHtml(n.summaryAr||'لا يوجد ملخص متاح.')}</div>${n.url?`<div style="margin-top:8px"><a href="${escapeHtml(n.url)}" target="_blank" rel="noopener noreferrer">فتح الخبر الأصلي</a></div>`:''}</article>`).join(''):'<div class="small">لا توجد أخبار محفوظة لهذا السهم.</div>';
-  }).catch(e=>{$('newsModalMeta').textContent='';$('newsModalBody').innerHTML=`<div class="small">${escapeHtml(e.message||'تعذر تحميل أخبار السهم.')}</div>`;});
+  const loadDetail=()=>{
+    if(!modal.classList.contains('show')||newsModalTicker!==ticker)return;
+    adminAction('news-detail',{ticker}).then(d=>{
+      if(newsModalTicker!==ticker)return;
+      const detail=d.data||{},items=Array.isArray(detail.news)?detail.news:[];
+      $('newsModalMeta').textContent=`آخر 6 أشهر — ${items.length.toLocaleString('ar-SA')} خبر${detail.coverageComplete?' — مكتملة الفترة':' — الفترة غير مكتملة'}${detail.error?' — '+detail.error:''}`;
+      $('newsModalBody').innerHTML=items.length?items.map(n=>`<article class="adminBox" style="margin-bottom:10px"><div style="font-weight:900">${escapeHtml(n.titleAr||n.title||'—')}</div><div class="small" style="margin-top:5px">${escapeHtml(n.source||'Investing.com')} — ${escapeHtml(n.publishedAt||'التاريخ غير متاح')} — <b>${escapeHtml(n.impactAr||'محايد')}</b></div><div style="margin-top:8px;line-height:1.8">${escapeHtml(n.summaryAr||'لا يوجد ملخص متاح.')}</div>${n.url?`<div style="margin-top:8px"><a href="${escapeHtml(n.url)}" target="_blank" rel="noopener noreferrer">فتح الخبر الأصلي</a></div>`:''}</article>`).join(''):'<div class="small">لا توجد أخبار محفوظة لهذا السهم حتى الآن.</div>';
+    }).catch(e=>{if(newsModalTicker===ticker){$('newsModalMeta').textContent='';$('newsModalBody').innerHTML=`<div class="small">${escapeHtml(e.message||'تعذر تحميل أخبار السهم.')}</div>`;}});
+  };
+  if(newsModalPollTimer)clearInterval(newsModalPollTimer);
+  newsModalPollTimer=setInterval(loadDetail,4000);
+  loadDetail();
 }
 
 async function loadNews(){const msg=$("newsMsg");try{const d=await adminAction('news');renderNews(d.data,d.status);const active=['collecting','analyzing','building'].includes(d.status?.state);if(active&&!newsPollTimer)newsPollTimer=setInterval(()=>loadNews().catch(()=>{}),4000);if(!active&&newsPollTimer){clearInterval(newsPollTimer);newsPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:d.status?.state==='partial'?`اكتمل جزء من التشغيل، وما زالت ${Number(d.status.incomplete||0)+Number(d.status.failed||0)} أسهم تحتاج استكمالًا في التشغيل القادم.`:'لم يتم تشغيل الأخبار بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل الأخبار.';}}
