@@ -74,6 +74,16 @@ export async function snapshot(tickers=[]){
   const m=new Map();
   if(!wanted.length)return m;
   const session=marketSession();
+  // CLOSED is read-only for prices. Reuse the frozen last After-Hours snapshot
+  // instead of querying Massive for a regular/previous close.
+  if(session==='closed'){
+    const stored=await getDataStore().get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
+    for(const [ticker,row] of Object.entries(stored?.records||{})){
+      const t=String(ticker||'').toUpperCase();
+      if(wanted.includes(t))m.set(t,row);
+    }
+    return m;
+  }
   // Keep the request bulk-based, but do not ask Massive for the entire market in
   // one response. Some deployments/proxies cap large snapshot responses, which
   // caused a small tail of requested tickers to disappear. Small ticker batches
@@ -91,7 +101,6 @@ export async function snapshot(tickers=[]){
       const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
       const valid=v=>Number.isFinite(v)&&v>0?v:null;
       const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
-      const officialClose=session==='regular'?valid(day)||valid(prev):valid(day)||valid(prev);
       let extendedPrice=null, source=null;
       if(session==='regular'){
         if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}
@@ -104,8 +113,6 @@ export async function snapshot(tickers=[]){
         if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}
         else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}
         else if(valid(after)){extendedPrice=after;source='afterHours';}
-      }else if(officialClose){
-        extendedPrice=officialClose;source='regularClose';
       }
       if(extendedPrice!=null)m.set(ticker,{extendedPrice,price:extendedPrice,regularPrice:valid(day)||valid(prev)||extendedPrice,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source,changePct:Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):(Number.isFinite(prev)&&prev>0?(extendedPrice-prev)/prev*100:null)});
     }
@@ -121,12 +128,10 @@ export async function snapshot(tickers=[]){
             const last=Number(x.lastTrade?.p), minute=Number(x.min?.c), pre=Number(x.preMarket?.p), after=Number(x.afterHours?.p), day=Number(x.day?.c), prev=Number(x.prevDay?.c);
             const valid=v=>Number.isFinite(v)&&v>0?v:null;
             const lastSession=tradeSession(x?.lastTrade?.t), minuteSession=tradeSession(x?.min?.t);
-            const officialClose=session==='regular'?valid(day)||valid(prev):valid(day)||valid(prev);
-            let extendedPrice=null,source=null;
+                  let extendedPrice=null,source=null;
             if(session==='regular'){if(lastSession==='regular'&&valid(last)){extendedPrice=last;source='regular';}else if(minuteSession==='regular'&&valid(minute)){extendedPrice=minute;source='regular';}}
             else if(session==='pre'){if(lastSession==='pre'&&valid(last)){extendedPrice=last;source='preMarket';}else if(minuteSession==='pre'&&valid(minute)){extendedPrice=minute;source='preMarket';}else if(valid(pre)){extendedPrice=pre;source='preMarket';}}
             else if(session==='after'){if(lastSession==='after'&&valid(last)){extendedPrice=last;source='afterHours';}else if(minuteSession==='after'&&valid(minute)){extendedPrice=minute;source='afterHours';}else if(valid(after)){extendedPrice=after;source='afterHours';}}
-            else if(officialClose){extendedPrice=officialClose;source='regularClose';}
             if(extendedPrice!=null)m.set(ticker,{extendedPrice,price:extendedPrice,regularPrice:valid(day)||valid(prev)||extendedPrice,preMarket:valid(pre),afterHours:valid(after),priceSession:session,priceSource:source,changePct:Number.isFinite(Number(x?.todaysChangePerc))?Number(x.todaysChangePerc):(Number.isFinite(prev)&&prev>0?(extendedPrice-prev)/prev*100:null)});
           }
           break;

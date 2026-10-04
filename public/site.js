@@ -375,8 +375,9 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-  const extended=Number(stock?.extendedPrice);
-  return Number.isFinite(extended)&&extended>0?extended:'-';
+  const candidates=[stock?.extendedPrice,stock?.currentPrice,stock?.current,stock?.afterHoursPrice];
+  for(const value of candidates){const n=Number(value);if(Number.isFinite(n)&&n>0)return n;}
+  return '-';
 }
 function normalizeLivePrice(live){
   const extended=Number(live?.extendedPrice);
@@ -393,10 +394,8 @@ async function loadCurrentPrices(){
     if(!r.ok||!d.ok)return false;
     const incomingUpdatedAt=d.updatedAt||null;
     currentPricesUpdatedAt=incomingUpdatedAt||currentPricesUpdatedAt; currentPriceSession=d.session||currentPriceSession||'closed';
-    // During closed/weekend/holiday periods the server publishes the official
-    // regular close once and then stops fetching. Never call Massive directly
-    // from the browser while closed; the stored official-close snapshot remains
-    // the source for search and favorites until the next Pre-Market.
+    // During closed/weekend/holiday periods the browser only reads the frozen
+    // last After-Hours snapshot. It never requests or substitutes a regular close.
     const map=d.records||{};
     // Do not rewrite the DOM every polling tick. The visible price remains
     // stable until the server publishes a new five-minute snapshot.
@@ -1292,7 +1291,7 @@ function ertikazCheckHtml(c){
 }
 function openErtikazModal(row){
   const m=$("ertikazModal"),title=$("ertikazModalTitle"),meta=$("ertikazModalMeta"),body=$("ertikazChecks");if(!m||!body)return;
-  title.textContent=`⚓ ارتكاز — ${row.ticker||'—'}`;
+  title.textContent=`ارتكاز — ${row.ticker||'—'}`;
   meta.textContent=`${row.passedCount||0}/${row.totalChecks||7} شروط متحققة — تاريخ التقسيم: ${row.splitDate||'غير متاح'} — آخر 4H: ${row.last4hDate||'غير متاح'}`;
   body.innerHTML=(row.checks||[]).map(ertikazCheckHtml).join('')||'<div class="small">لا توجد تفاصيل.</div>';m.classList.add('show');
 }
@@ -1302,7 +1301,7 @@ function renderErtikaz(data,status){
   body.innerHTML=rows.map(x=>{
     const passed=Number(x.passedCount||0),total=Number(x.totalChecks||7)||7,qualified=passed===total;
     const status=qualified?'✓ مكتمل':'غير مكتمل';
-    return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">⚓ ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${status}</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`;
+    return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${status}</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.last4hDate||'—')}</td></tr>`;
   }).join('')||'<tr><td colspan="7">لا توجد أسهم في الكاش المركزي حتى آخر تحليل.</td></tr>';
   const meta=$("ertikazMeta");if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${Number(data.universeTickers||rows.length)} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
   body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.ertikazTicker);if(row)openErtikazModal(row);}));

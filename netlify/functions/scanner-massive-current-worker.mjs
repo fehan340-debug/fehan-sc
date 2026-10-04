@@ -101,45 +101,14 @@ function choosePrice(x,session,now){
 }
 export async function runMassiveCurrentUpdate(){
   const sessionNow=marketSession(new Date());
-  // Live-price cycle: Pre-Market -> Regular -> After-Hours. At the first
-  // closed cycle after After-Hours, publish the official regular close once.
-  // Then stop all Massive requests until the next Pre-Market; weekends and
-  // holidays simply keep this closed snapshot.
+  // Live-price cycle: Pre-Market -> Regular -> After-Hours. After After-Hours
+  // ends, the price lane becomes read-only until the next Pre-Market.
   if(sessionNow==='closed'){
-    const store=getDataStore();
-    const previous=await store.get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
-    const prevUpdated=previous?.updatedAt?new Date(previous.updatedAt):null;
-    const prevSession=String(previous?.session||'');
-    const prevEt=prevUpdated?etParts(prevUpdated):null;
-    const previousTradingDate=prevSession==='after'&&prevEt?`${prevEt.year}-${prevEt.month}-${prevEt.day}`:null;
-    const closedFinalized=await store.get('scanner-current-price-closed-finalized-v1',{type:'json',consistency:'strong'}).catch(()=>null);
-    if(String(closedFinalized?.tradingDate||'')===String(previousTradingDate||'')){
-      return {ok:true,skipped:true,session:'closed',reason:'official-close-already-finalized'};
-    }
-    if(!previousTradingDate){
-      return {ok:true,skipped:true,session:'closed',reason:'no-after-hours-snapshot-to-finalize'};
-    }
-    const universe=await store.get('scanner-universe-v2',{type:'json',consistency:'strong'}).catch(()=>null);
-    const tickers=[...new Set((universe?.tickers||[]).map(x=>String(x).toUpperCase()).filter(Boolean))];
-    if(!tickers.length)return {ok:true,skipped:true,session:'closed',reason:'empty-universe'};
-    const snap=await getSnapshot(tickers),map={};
-    const now=new Date();
-    for(const x of snap.tickers||[]){
-      const t=String(x?.ticker||'').toUpperCase(); if(!t)continue;
-      const official=Number.isFinite(Number(x?.day?.c))?Number(x.day.c):null;
-      if(Number.isFinite(official)&&official>0){
-        map[t]={ticker:t,extendedPrice:official,price:official,current:official,currentPrice:official,regularPrice:official,preMarket:Number.isFinite(Number(x?.preMarket?.p))?Number(x.preMarket.p):null,afterHours:Number.isFinite(Number(x?.afterHours?.p))?Number(x.afterHours.p):null,priceSession:'closed',priceSource:'officialClose',quoteState:'official-close',prevClose:Number.isFinite(Number(x?.prevDay?.c))?Number(x.prevDay.c):null,updatedAt:now.toISOString()};
-      }
-    }
-    if(Object.keys(map).length){
-      const payload={version:4,updatedAt:now.toISOString(),session:'closed',records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length,priceSource:'officialClose'};
-      await store.setJSON('scanner-massive-current-v1',payload);
-      await store.setJSON('scanner-current-price-v1',payload);
-      await store.setJSON('scanner-current-price-status',{state:'ready',updatedAt:now.toISOString(),session:'closed',requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,error:null});
-      await store.setJSON('scanner-current-price-closed-finalized-v1',{tradingDate:previousTradingDate,updatedAt:now.toISOString(),priceSource:'officialClose'});
-      return {ok:true,updatedAt:now.toISOString(),session:'closed',officialClose:true,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length};
-    }
-    return {ok:true,skipped:true,session:'closed',reason:'official-close-not-returned'};
+    // CLOSED IS READ-ONLY: do not call Massive, do not publish a new price,
+    // and do not replace the last valid After-Hours quote with regular close,
+    // previous close, zero, or an empty record. The last After-Hours snapshot
+    // remains authoritative until Pre-Market starts again.
+    return {ok:true,skipped:true,session:'closed',reason:'market-closed-waiting-for-pre-market'};
   }
   const store=getDataStore();
   const lock=await store.get("scanner-massive-current-lock",{type:"json",consistency:"strong"}).catch(()=>null);
@@ -160,12 +129,9 @@ export async function runMassiveCurrentUpdate(){
     const previousRecords=previous?.records&&typeof previous.records==='object'?previous.records:{};
     for(const t of tickers){
       if(map[t])continue;
-      const old=previousRecords[t], oldPrice=Number(old?.extendedPrice);
-      const oldAt=old?.updatedAt?new Date(old.updatedAt):null;
-      const nowEt=etParts(now), oldEt=oldAt?etParts(oldAt):null;
-      const sameEtDate=Boolean(oldEt&&nowEt&&oldEt.year===nowEt.year&&oldEt.month===nowEt.month&&oldEt.day===nowEt.day);
-      if(Number.isFinite(oldPrice)&&oldPrice>0&&String(old?.priceSession||'')===session&&sameEtDate){
-        map[t]={ticker:t,...old,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
+      const old=previousRecords[t], oldPrice=Number(old?.extendedPrice ?? old?.price ?? old?.currentPrice ?? old?.current);
+      if(Number.isFinite(oldPrice)&&oldPrice>0){
+        map[t]={ticker:t,...old,extendedPrice:oldPrice,price:oldPrice,current:oldPrice,currentPrice:oldPrice,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
       }
     }
     const payload={version:3,updatedAt:now.toISOString(),session,records:map,requestedTickers:tickers.length,updatedTickers:Object.keys(map).length,missingTickers:tickers.filter(t=>!map[t]).length};

@@ -1,4 +1,4 @@
-import { getSiteSettings, getDataStore } from '../../lib.js';
+import { getSiteSettings } from '../../lib.js';
 import { runMassiveCurrentUpdate } from './scanner-massive-current-worker.mjs';
 export default async function(){
   const settings=await getSiteSettings();
@@ -7,25 +7,10 @@ export default async function(){
   const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);
   const weekday=parts.find(x=>x.type==='weekday')?.value||'';
   const hour=Number(parts.find(x=>x.type==='hour')?.value||0);
-  // Outside the live window, the current-price worker performs at most one
-  // final official-close publication after After-Hours, then stops. Do not
-  // call Massive on every scheduled invocation during closed/weekend periods.
+  // Outside the live window there is no price search at all. The last valid
+  // After-Hours snapshot remains untouched until Pre-Market starts.
   if(hour>=20 || ['Sat','Sun'].includes(weekday)){
-    try{
-      const store=getDataStore();
-      const current=await store.get('scanner-current-price-v1',{type:'json',consistency:'strong'}).catch(()=>null);
-      const finalized=await store.get('scanner-current-price-closed-finalized-v1',{type:'json',consistency:'strong'}).catch(()=>null);
-      const updated=current?.updatedAt?new Date(current.updatedAt):null;
-      const ep=updated?new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(updated):[];
-      const etDate=ep.length?`${ep.find(x=>x.type==='year')?.value}-${ep.find(x=>x.type==='month')?.value}-${ep.find(x=>x.type==='day')?.value}`:null;
-      if(String(current?.session||'')==='closed' && String(finalized?.tradingDate||'')===String(etDate||'')){
-        return new Response('official close already finalized; price fetching stopped',{status:200});
-      }
-      // Only the first closed invocation after an After-Hours snapshot may
-      // finalize the official close. The worker itself has the same guard.
-      const result=await runMassiveCurrentUpdate();
-      return new Response(JSON.stringify(result),{status:202,headers:{'content-type':'application/json','cache-control':'no-store'}});
-    }catch(e){return new Response(String(e?.message||e),{status:500});}
+    return new Response('market closed; price fetching stopped until Pre-Market',{status:200});
   }
   if(hour<4)return new Response('outside automatic current-price window',{status:200});
   // Fail-safe lane: GitHub Actions remains the primary five-minute worker.

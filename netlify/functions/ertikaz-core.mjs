@@ -73,136 +73,108 @@ function rsiDaily(row){const n=Number(row?.rsi);return Number.isFinite(n)?n:null
 function shortAvailable(row){const n=Number(row?.shortShares);return Number.isFinite(n)?n:null;}
 
 export function detectErtikazSequence(bars,splitDate){
+  // The base is a stateful
+  // lowest-low anchor: before condition 6, any lower 4H low replaces the base
+  // and restarts its five-session hold. After condition 6, a break below the
+  // confirmed base is treated only as the liquidity-sweep condition.
   const b=bars
-    .filter(x=>x.date>=splitDate&&Number.isFinite(Number(x.low)))
+    .filter(x=>x.date>=splitDate&&Number.isFinite(Number(x.low))&&Number(x.low)>0)
     .sort((a,z)=>a.t-z.t);
   if(!b.length)return {base:null,resistance:null,support:null,liquidity:null};
 
   const dates=[...new Set(b.map(x=>x.date))].sort();
   const dateIndex=new Map(dates.map((d,i)=>[d,i]));
+  let baseBar=null;
+  let resistanceBar=null;
+  let supportBar=null;
 
-  // Sequence rules:
-  // - A base starts at any new low candidate.
-  // - The base must survive 5 real trading sessions; a lower low before
-  //   condition 6 replaces it and restarts the five-session clock.
-  // - Resistance and the second support MAY form during those five sessions.
-  // - The support is the LOWEST valid support after resistance, between the
-  //   base and +5% of the base, provided the base has not broken first.
-  // - Liquidity is NOT examined until the base has completed its five-session
-  //   hold AND condition 6 (second support) exists.
-  // - Once condition 6 exists and the base is confirmed, a break below the
-  //   base is evaluated only as liquidity, with a 10% maximum depth.
-  for(let start=0;start<b.length;start++){
-    const candidate=b[start];
-    const basePrice=Number(candidate.low);
-    const baseDate=candidate.date;
-    const baseDateIndex=dateIndex.get(baseDate);
-    if(baseDateIndex===undefined)continue;
+  // Walk forward once. The only way the base changes before support is a new
+  // lower low. This guarantees that the model cannot jump to a higher alternate
+  // low (the ABTC 7.47-vs-4.92 error).
+  for(const x of b){
+    if(!baseBar){baseBar=x;continue;}
+    if(!resistanceBar&&!supportBar&&Number(x.low)<Number(baseBar.low)-1e-9){
+      baseBar=x;
+      resistanceBar=null;
+      supportBar=null;
+      continue;
+    }
 
-    const holdDates=dates.slice(baseDateIndex+1,baseDateIndex+6);
-    if(holdDates.length<5)continue;
-    const holdEnd=holdDates[4];
+    const basePrice=Number(baseBar.low);
+    if(!resistanceBar){
+      const resistanceLow=basePrice*1.15;
+      const resistanceHigh=basePrice*1.25;
+      if(Number(x.high)>=resistanceLow&&Number(x.high)<=resistanceHigh){
+        resistanceBar=x;
+      }
+      continue;
+    }
 
-    // Any lower low before the second support invalidates this base and makes
-    // that lower low the next base candidate. This is never liquidity.
-    const resistanceLow=basePrice*1.15;
-    const resistanceHigh=basePrice*1.25;
-    const afterBase=b.filter(x=>x.t>candidate.t);
-    const rbar=afterBase.find(x=>
-      x.date<=holdEnd &&
-      Number(x.high)>=resistanceLow &&
-      Number(x.high)<=resistanceHigh
-    ) || afterBase.find(x=>
-      Number(x.high)>=resistanceLow &&
-      Number(x.high)<=resistanceHigh
-    );
-    if(!rbar)continue;
-
-    // If the base broke before resistance was established, this setup is dead.
-    // The lower candle becomes the next base candidate on the next outer pass.
-    const breakBeforeResistance=afterBase.find(x=>x.t<=rbar.t&&Number(x.low)<basePrice-1e-9);
-    if(breakBeforeResistance)continue;
-
-    const resistance={
-      price:Math.max(Number(rbar.high),resistanceLow),
-      date:rbar.date,
-      high:Number(rbar.high),
-      zoneLow:resistanceLow,
-      zoneHigh:resistanceHigh
-    };
-
-    const afterResistance=afterBase.filter(x=>x.t>rbar.t);
-    const supportCandidates=[];
-    let brokenBeforeSupport=null;
-
-    for(const x of afterResistance){
+    if(!supportBar){
       const low=Number(x.low);
-      if(!Number.isFinite(low))continue;
-
-      // Before condition 6, any break below the base resets the whole setup.
+      // A break below the base before condition 6 is never liquidity; it
+      // becomes the new base immediately and all derived levels restart.
       if(low<basePrice-1e-9){
-        brokenBeforeSupport=x;
-        break;
+        baseBar=x;
+        resistanceBar=null;
+        supportBar=null;
+        continue;
       }
-
-      if(low>=basePrice-1e-9 && low<=basePrice*1.05+1e-9){
-        supportCandidates.push(x);
+      if(low>=basePrice-1e-9&&low<=basePrice*1.05+1e-9){
+        // Keep the LOWEST valid support after resistance.
+        if(!supportBar||low<Number(supportBar.low)-1e-9)supportBar=x;
       }
     }
+  }
 
-    if(brokenBeforeSupport){
-      // Outer loop will pick this lower candle as the new base candidate.
-      continue;
-    }
+  if(!baseBar)return {base:null,resistance:null,support:null,liquidity:null};
+  const basePrice=Number(baseBar.low);
+  const baseDate=baseBar.date;
+  const baseDateIndex=dateIndex.get(baseDate);
+  const holdDates=baseDateIndex===undefined?[]:dates.slice(baseDateIndex+1,baseDateIndex+6);
+  const holdConfirmed=holdDates.length>=5;
+  const holdEnd=holdConfirmed?holdDates[4]:null;
 
-    if(!supportCandidates.length)continue;
+  const base={
+    price:basePrice,
+    date:baseDate,
+    index:b.indexOf(baseBar),
+    holdThrough:holdEnd,
+    holdSessions:holdConfirmed?5:holdDates.length,
+    holdConfirmed
+  };
 
-    // The required support is the LOWEST valid support formed after resistance.
-    const sbar=supportCandidates.reduce((best,x)=>
-      !best||Number(x.low)<Number(best.low)||(Number(x.low)===Number(best.low)&&x.t>best.t)?x:best,null);
+  const resistance=resistanceBar?{
+    price:Number(resistanceBar.high),
+    date:resistanceBar.date,
+    high:Number(resistanceBar.high),
+    zoneLow:basePrice*1.15,
+    zoneHigh:basePrice*1.25
+  }:null;
 
-    const support={
-      price:Number(sbar.low),
-      date:sbar.date,
-      zoneLow:basePrice,
-      zoneHigh:basePrice*1.05
-    };
+  const support=supportBar?{
+    price:Number(supportBar.low),
+    date:supportBar.date,
+    zoneLow:basePrice,
+    zoneHigh:basePrice*1.05
+  }:null;
 
-    // Confirm the five-session base. A lower low during the five-session
-    // window invalidates this setup even if resistance/support were formed.
-    const lowerDuringHold=b.filter(x=>
-      x.t>candidate.t && x.date<=holdEnd && Number(x.low)<basePrice-1e-9
-    )[0];
-    if(lowerDuringHold){
-      continue;
-    }
-
-    const base={
-      price:basePrice,
-      date:baseDate,
-      index:start,
-      holdThrough:holdEnd,
-      holdSessions:5,
-      holdConfirmed:true
-    };
-
-    // Liquidity is enabled only AFTER both conditions are satisfied:
-    // (1) five-session base confirmation and (2) second support formation.
-    // Therefore a dip below the base before this point is never classified
-    // as liquidity.
-    const afterSupport=b.filter(x=>x.t>sbar.t);
-    let liquidity=null;
+  // Liquidity can only be examined after both the five-session hold and the
+  // second support. Search only AFTER support so earlier lower lows can never
+  // be misclassified as a sweep.
+  let liquidity=null;
+  if(holdConfirmed&&support&&resistanceBar){
+    const supportT=Number(supportBar.t);
+    const afterSupport=b.filter(x=>x.t>supportT);
     let invalidated=false;
     for(const q of afterSupport){
       const qLow=Number(q.low);
       if(!Number.isFinite(qLow)||qLow>=basePrice-1e-9)continue;
-
       const sweepPct=((basePrice-qLow)/basePrice)*100;
       if(sweepPct>MAX_LIQUIDITY_SWEEP_PCT+1e-9){
         invalidated=true;
         break;
       }
-
       const idx=dateIndex.get(q.date);
       if(idx===undefined)continue;
       const allowedDates=new Set(dates.slice(idx,idx+2));
@@ -221,14 +193,11 @@ export function detectErtikazSequence(bars,splitDate){
         break;
       }
     }
-
-    if(invalidated)continue;
-    return {base,resistance,support,liquidity};
+    if(invalidated)liquidity=null;
   }
 
-  return {base:null,resistance:null,support:null,liquidity:null};
+  return {base,resistance,support,liquidity};
 }
-
 export function evaluateErtikazRules(ticker,row,bars,nowDate){
   const rsi=rsiDaily(row), short=shortAvailable(row), splitDate=String(row?.splitDate||'');
   const elapsed=calendarDays(splitDate,nowDate);
@@ -266,7 +235,9 @@ export async function collectErtikazData({force=false}={}){
     }else{
       bars=await fetch4H(t,splitDate,now); updated++;
     }
-    const cutoff=nowMinusDays(config.lookbackDays); bars=bars.filter(x=>x.date>=splitDate&&x.date>=cutoff);
+    // The model's base must be the true lowest 4H low since the split anchor.
+    // Do not apply an arbitrary lookback cutoff that can silently remove the real low.
+    bars=bars.filter(x=>x.date>=splitDate);
     await saveHistory(t,{version:1,ticker:t,splitDate,initialized:true,bars,updatedAt:new Date().toISOString(),lastDate:bars.at(-1)?.date||null});
     histories[t]={ticker:t,row,bars};
   }catch(e){failed++;histories[t]={ticker:t,row,bars:[],error:String(e?.message||e)};}processed++;if(processed%10===0||processed===tickers.length)await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',date:now,total:tickers.length,processed,updated,unchanged,failed});}};
