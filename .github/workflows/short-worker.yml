@@ -36,8 +36,12 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Install short-worker dependency only
+        run: |
+          cp package.json /tmp/package.full.json
+          printf '%s\n' '{"name":"short-worker-ci","private":true,"type":"module","dependencies":{"cheerio":"1.1.2"}}' > package.json
+          npm install --no-audit --no-fund --ignore-scripts --package-lock=false
+          mv /tmp/package.full.json package.json
 
       - name: Validate required secrets
         run: |

@@ -25,7 +25,7 @@ concurrency:
 jobs:
   collect-and-cache-news:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -42,8 +42,8 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Skip npm install
+        run: echo "News worker uses only Node.js built-ins and project-local modules; no npm dependencies are required."
       - name: Validate required secrets
         run: |
           test -n "$SCRAPINGANT_API_KEY" || (echo "Missing SCRAPINGANT_API_KEY" && exit 1)
