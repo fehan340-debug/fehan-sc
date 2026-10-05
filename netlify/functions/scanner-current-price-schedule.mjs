@@ -1,18 +1,12 @@
 import { getSiteSettings } from '../../lib.js';
 import { runMassiveCurrentUpdate } from './scanner-massive-current-worker.mjs';
+import { marketSession } from '../../market-calendar.mjs';
 export default async function(){
   const settings=await getSiteSettings();
   if(settings.auto_update_enabled!==true)return new Response('automatic updates disabled',{status:200});
-  const now=new Date();
-  const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);
-  const weekday=parts.find(x=>x.type==='weekday')?.value||'';
-  const hour=Number(parts.find(x=>x.type==='hour')?.value||0);
-  // Outside the live window there is no price search at all. The last valid
-  // After-Hours snapshot remains untouched until Pre-Market starts.
-  if(hour>=20 || ['Sat','Sun'].includes(weekday)){
-    return new Response('market closed; price fetching stopped until Pre-Market',{status:200});
-  }
-  if(hour<4)return new Response('outside automatic current-price window',{status:200});
+  const now=new Date(), session=marketSession(now);
+  // Outside the live window, weekends, and US equity holidays are read-only.
+  if(session==='closed')return new Response('market closed/holiday; price fetching stopped until Pre-Market',{status:200});
   // Fail-safe lane: GitHub Actions remains the primary five-minute worker.
   // Netlify only runs the direct price worker when the published snapshot is
   // missing or older than six minutes, so the two lanes do not duplicate API work.

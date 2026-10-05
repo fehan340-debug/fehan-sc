@@ -13,7 +13,7 @@ export default async function(request){
     const records={};
     for(const [ticker,row] of Object.entries(raw)){
       const p=Number(row?.extendedPrice);
-      records[String(ticker).toUpperCase()]={...row,extendedPrice:Number.isFinite(p)&&p>0?p:(Number.isFinite(Number(row?.price))&&Number(row.price)>0?Number(row.price):null)};
+      records[String(ticker).toUpperCase()]={...row,extendedPrice:Number.isFinite(p)&&p>0?p:null};
     }
     return json({ok:true,ready:Boolean(Object.keys(records).length),updatedAt:source?.updatedAt||null,session:source?.session||'closed',records},200,headers);
   }catch(e){return json({ok:false,ready:false,records:{},error:String(e?.message||e)},500);}

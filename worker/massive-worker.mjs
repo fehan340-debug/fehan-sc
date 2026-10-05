@@ -1,6 +1,7 @@
 import { store } from './store.mjs';
 import { runHourlyBuild } from '../netlify/functions/scanner-hourly-core.mjs';
 import { runAlertSweep } from '../netlify/functions/alerts.mjs';
+import { marketSession, isUsEquityMarketHoliday } from '../market-calendar.mjs';
 const BASE='https://api.massive.com';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const finite=v=>Number.isFinite(Number(v))?Number(v):null;
@@ -19,16 +20,6 @@ async function automaticUpdatesEnabled(){
 }
 
 
-function etParts(date=new Date()){
-  return Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date).map(x=>[x.type,x.value]));
-}
-function marketSession(date=new Date()){
-  const p=etParts(date), mins=Number(p.hour)*60+Number(p.minute);
-  if(mins>=240&&mins<570)return 'pre';
-  if(mins>=570&&mins<960)return 'regular';
-  if(mins>=960&&mins<1200)return 'after';
-  return 'closed';
-}
 function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
 function tradeSession(ts,now=new Date()){
   const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);
@@ -145,6 +136,9 @@ async function main(){
   //    The technical cache remains unchanged for the rest of that day.
 
   const now=new Date(),session=marketSession(now);
+  if(isUsEquityMarketHoliday(now)){
+    console.log('[worker] US equity market holiday: no Massive request; retaining last After-Hours snapshot.');
+  }
   // Live prices run only from Pre-Market through the end of After-Hours.
   // After After-Hours ends, the stored last After-Hours quote remains frozen
   // and no new Massive price request is made until Pre-Market.

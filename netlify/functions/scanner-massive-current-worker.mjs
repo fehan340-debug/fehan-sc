@@ -1,20 +1,11 @@
 import { getDataStore } from "../../lib.js";
 import { currentUser } from "../../lib.js";
+import { marketSession } from "../../market-calendar.mjs";
 
 const BASE="https://api.massive.com";
 const KEY=()=>String(process.env.MASSIVE_API_KEY||"").trim();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
-function etParts(date=new Date()){
-  return Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date).map(x=>[x.type,x.value]));
-}
-function marketSession(date=new Date()){
-  const p=etParts(date), mins=Number(p.hour)*60+Number(p.minute);
-  if(mins>=240&&mins<570)return 'pre';
-  if(mins>=570&&mins<960)return 'regular';
-  if(mins>=960&&mins<1200)return 'after';
-  return 'closed';
-}
 function timestampMs(value){
   const n=Number(value); if(!Number.isFinite(n)||n<=0)return null;
   if(n>1e17)return n/1e6;      // nanoseconds
@@ -129,7 +120,7 @@ export async function runMassiveCurrentUpdate(){
     const previousRecords=previous?.records&&typeof previous.records==='object'?previous.records:{};
     for(const t of tickers){
       if(map[t])continue;
-      const old=previousRecords[t], oldPrice=Number(old?.extendedPrice ?? old?.price ?? old?.currentPrice ?? old?.current);
+      const old=previousRecords[t], oldPrice=Number(old?.extendedPrice);
       if(Number.isFinite(oldPrice)&&oldPrice>0){
         map[t]={ticker:t,...old,extendedPrice:oldPrice,price:oldPrice,current:oldPrice,currentPrice:oldPrice,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
       }

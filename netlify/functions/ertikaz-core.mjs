@@ -73,129 +73,78 @@ function rsiDaily(row){const n=Number(row?.rsi);return Number.isFinite(n)?n:null
 function shortAvailable(row){const n=Number(row?.shortShares);return Number.isFinite(n)?n:null;}
 
 export function detectErtikazSequence(bars,splitDate){
-  // The base is a stateful
-  // lowest-low anchor: before condition 6, any lower 4H low replaces the base
-  // and restarts its five-session hold. After condition 6, a break below the
-  // confirmed base is treated only as the liquidity-sweep condition.
-  const b=bars
-    .filter(x=>x.date>=splitDate&&Number.isFinite(Number(x.low))&&Number(x.low)>0)
-    .sort((a,z)=>a.t-z.t);
+  const b=bars.filter(x=>x.date>=splitDate&&Number.isFinite(Number(x.low))&&Number(x.low)>0).sort((a,z)=>a.t-z.t);
   if(!b.length)return {base:null,resistance:null,support:null,liquidity:null};
-
   const dates=[...new Set(b.map(x=>x.date))].sort();
   const dateIndex=new Map(dates.map((d,i)=>[d,i]));
-  let baseBar=null;
-  let resistanceBar=null;
-  let supportBar=null;
 
-  // Walk forward once. The only way the base changes before support is a new
-  // lower low. This guarantees that the model cannot jump to a higher alternate
-  // low (the ABTC 7.47-vs-4.92 error).
+  // Chronological state machine; the anchor is selected directly from 4H lows.
+  // Before five trading sessions have elapsed, any lower 4H low invalidates the
+  // current base immediately and becomes the new base. This is what allows a
+  // later true low such as 4.92 to replace an earlier 7.40 even if resistance
+  // was already seen above the earlier low.
+  let baseBar=null, resistanceBar=null, supportBar=null;
   for(const x of b){
     if(!baseBar){baseBar=x;continue;}
-    if(!resistanceBar&&!supportBar&&Number(x.low)<Number(baseBar.low)-1e-9){
+    const baseIdx=dateIndex.get(baseBar.date);
+    const heldDates=baseIdx===undefined?[]:dates.slice(baseIdx+1,baseIdx+6);
+    const holdConfirmed=heldDates.length>=5&&String(x.date)>=String(heldDates[4]);
+
+    if(!holdConfirmed&&Number(x.low)<Number(baseBar.low)-1e-9){
+      // A break before five real trading sessions creates the new base immediately.
       baseBar=x;
       resistanceBar=null;
       supportBar=null;
       continue;
     }
 
-    const basePrice=Number(baseBar.low);
-    if(!resistanceBar){
-      const resistanceLow=basePrice*1.15;
-      const resistanceHigh=basePrice*1.25;
-      if(Number(x.high)>=resistanceLow&&Number(x.high)<=resistanceHigh){
-        resistanceBar=x;
-      }
+    // Resistance and support are allowed to form before the five-session hold is
+    // complete. If the base breaks during that period they are cleared above and
+    // must be rebuilt from the new base. Liquidity is the only condition gated by
+    // the five-session hold.
+    if(!resistanceBar&&x.t>baseBar.t){
+      const basePrice=Number(baseBar.low), h=Number(x.high);
+      if(h>=basePrice*1.15-1e-9&&h<=basePrice*1.25+1e-9)resistanceBar=x;
       continue;
     }
-
-    if(!supportBar){
-      const low=Number(x.low);
-      // A break below the base before condition 6 is never liquidity; it
-      // becomes the new base immediately and all derived levels restart.
-      if(low<basePrice-1e-9){
-        baseBar=x;
-        resistanceBar=null;
-        supportBar=null;
-        continue;
-      }
-      if(low>=basePrice-1e-9&&low<=basePrice*1.05+1e-9){
-        // Keep the LOWEST valid support after resistance.
-        if(!supportBar||low<Number(supportBar.low)-1e-9)supportBar=x;
-      }
+    if(resistanceBar&&!supportBar&&x.t>resistanceBar.t){
+      const basePrice=Number(baseBar.low), low=Number(x.low);
+      if(low>=basePrice-1e-9&&low<=basePrice*1.05+1e-9)supportBar=x;
+      continue;
     }
   }
 
   if(!baseBar)return {base:null,resistance:null,support:null,liquidity:null};
-  const basePrice=Number(baseBar.low);
-  const baseDate=baseBar.date;
-  const baseDateIndex=dateIndex.get(baseDate);
-  const holdDates=baseDateIndex===undefined?[]:dates.slice(baseDateIndex+1,baseDateIndex+6);
+  const basePrice=Number(baseBar.low), baseDate=baseBar.date, baseIdx=dateIndex.get(baseDate);
+  const holdDates=baseIdx===undefined?[]:dates.slice(baseIdx+1,baseIdx+6);
   const holdConfirmed=holdDates.length>=5;
-  const holdEnd=holdConfirmed?holdDates[4]:null;
+  const base={price:basePrice,date:baseDate,index:b.indexOf(baseBar),holdThrough:holdConfirmed?holdDates[4]:null,holdSessions:holdDates.length,holdConfirmed};
 
-  const base={
-    price:basePrice,
-    date:baseDate,
-    index:b.indexOf(baseBar),
-    holdThrough:holdEnd,
-    holdSessions:holdConfirmed?5:holdDates.length,
-    holdConfirmed
-  };
+  const resistance=resistanceBar?{price:Number(resistanceBar.high),date:resistanceBar.date,high:Number(resistanceBar.high),zoneLow:basePrice*1.15,zoneHigh:basePrice*1.25}:null;
+  const support=supportBar?{price:Number(supportBar.low),date:supportBar.date,zoneLow:basePrice,zoneHigh:basePrice*1.05}:null;
 
-  const resistance=resistanceBar?{
-    price:Number(resistanceBar.high),
-    date:resistanceBar.date,
-    high:Number(resistanceBar.high),
-    zoneLow:basePrice*1.15,
-    zoneHigh:basePrice*1.25
-  }:null;
-
-  const support=supportBar?{
-    price:Number(supportBar.low),
-    date:supportBar.date,
-    zoneLow:basePrice,
-    zoneHigh:basePrice*1.05
-  }:null;
-
-  // Liquidity can only be examined after both the five-session hold and the
-  // second support. Search only AFTER support so earlier lower lows can never
-  // be misclassified as a sweep.
   let liquidity=null;
-  if(holdConfirmed&&support&&resistanceBar){
+  if(holdConfirmed&&resistanceBar&&supportBar){
     const supportT=Number(supportBar.t);
     const afterSupport=b.filter(x=>x.t>supportT);
-    let invalidated=false;
     for(const q of afterSupport){
       const qLow=Number(q.low);
       if(!Number.isFinite(qLow)||qLow>=basePrice-1e-9)continue;
       const sweepPct=((basePrice-qLow)/basePrice)*100;
-      if(sweepPct>MAX_LIQUIDITY_SWEEP_PCT+1e-9){
-        invalidated=true;
-        break;
-      }
-      const idx=dateIndex.get(q.date);
-      if(idx===undefined)continue;
+      const idx=dateIndex.get(q.date); if(idx===undefined)continue;
       const allowedDates=new Set(dates.slice(idx,idx+2));
-      const recovery=afterSupport.find(x=>
-        allowedDates.has(x.date)&&x.t>=q.t&&Number(x.close)>support.price
-      );
-      if(recovery){
-        liquidity={
-          sweepDate:q.date,
-          sweepLow:qLow,
-          recoveryDate:recovery.date,
-          recoveryClose:Number(recovery.close),
-          sweepPct:Number(sweepPct.toFixed(2)),
-          maxSweepPct:Number(sweepPct.toFixed(2))
-        };
+      const recovery=afterSupport.find(x=>allowedDates.has(x.date)&&x.t>=q.t&&Number(x.close)>Number(supportBar.low));
+      if(sweepPct<=MAX_LIQUIDITY_SWEEP_PCT+1e-9&&recovery){
+        liquidity={sweepDate:q.date,sweepLow:qLow,recoveryDate:recovery.date,recoveryClose:Number(recovery.close),sweepPct:Number(sweepPct.toFixed(2)),maxSweepPct:Number(sweepPct.toFixed(2))};
         break;
       }
+      // The sweep either exceeded 10% or failed to recover above support within
+      // the allowed next trading session. The old base is invalid; restart the
+      // entire sequence from the failed sweep low as the new base.
+      const restartBars=b.filter(x=>x.t>=q.t);
+      return detectErtikazSequence(restartBars,splitDate);
     }
-    if(invalidated)liquidity=null;
   }
-
   return {base,resistance,support,liquidity};
 }
 export function evaluateErtikazRules(ticker,row,bars,nowDate){
@@ -206,7 +155,7 @@ export function evaluateErtikazRules(ticker,row,bars,nowDate){
     {key:'rsi',label:'RSI يومي أقل من 30',passed:rsi!==null&&rsi<30,value:rsi===null?null:Number(rsi.toFixed(2)),detail:rsi===null?'RSI غير متاح':`RSI اليومي ${rsi.toFixed(2)} ${rsi<30?'أقل من 30':'ليس أقل من 30'}`},
     {key:'shortAvailable',label:'Short Available ≤ 10,000',passed:short!==null&&short<=10000,value:short,detail:short===null?'Short Available غير متاح':`${short.toLocaleString()} سهم متاح`},
     {key:'splitDays',label:'أيام منذ التقسيم 20 / 30 / 50',passed:elapsed!==null&&elapsed>=20,value:elapsed,detail:elapsed===null?'تاريخ التقسيم غير متاح':`${elapsed} يومًا منذ ${splitDate}` ,milestones:{20:elapsed!==null&&elapsed>=20,30:elapsed!==null&&elapsed>=30,50:elapsed!==null&&elapsed>=50}},
-    {key:'baseHold',label:'المحافظة على القاع 5 جلسات تداول فعلية',passed:Boolean(seq.base),value:seq.base?.price??null,detail:seq.base?`قاع ${seq.base.price.toFixed(4)} — ثبت حتى ${seq.base.holdThrough} (${seq.base.holdSessions} جلسات)`: 'لم يثبت قاع لمدة 5 جلسات متتالية'},
+    {key:'baseHold',label:'المحافظة على القاع 5 جلسات تداول فعلية',passed:Boolean(seq.base?.holdConfirmed),value:seq.base?.price??null,detail:seq.base?`قاع ${seq.base.price.toFixed(4)} — ${seq.base.holdConfirmed?`ثبت حتى ${seq.base.holdThrough}`:`لم يكتمل الثبات (${seq.base.holdSessions}/5 جلسات)`}`:'لم يتم تحديد قاع'},
     {key:'resistance',label:'اختبار المقاومة +15% إلى +25% من القاع',passed:Boolean(seq.resistance),value:seq.resistance?.high??null,detail:seq.resistance?`اختبار ${seq.resistance.high.toFixed(4)} — المنطقة ${seq.resistance.zoneLow.toFixed(4)} إلى ${seq.resistance.zoneHigh.toFixed(4)}`:'لم يحدث اختبار مقاومة ضمن المنطقة المحددة'},
     {key:'supportRetest',label:'العودة لاختبار الدعم دون كسر القاع وبحد أقصى +5%',passed:Boolean(seq.support),value:seq.support?.price??null,detail:seq.support?`إعادة اختبار ${seq.support.price.toFixed(4)} بعد المقاومة`:'لم تحدث إعادة اختبار للدعم بعد المقاومة'},
     {key:'liquiditySweep',label:'سحب سيولة حتى 10% تحت القاع والعودة خلال جلسة أو أقل',passed:Boolean(seq.liquidity),value:seq.liquidity?.sweepPct??null,detail:seq.liquidity?`سحب سيولة ${seq.liquidity.sweepPct.toFixed(2)}% إلى ${seq.liquidity.sweepLow.toFixed(4)} ثم عودة ${seq.liquidity.recoveryClose.toFixed(4)} في ${seq.liquidity.recoveryDate}`:'لم يتحقق سحب السيولة بالتسلسل المطلوب — إذا تجاوز السحب 10% يُلغى القاع ويبدأ البحث عن قاع جديد'}

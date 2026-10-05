@@ -375,15 +375,14 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-  const candidates=[stock?.extendedPrice,stock?.currentPrice,stock?.current,stock?.afterHoursPrice];
+  const candidates=[stock?.extendedPrice];
   for(const value of candidates){const n=Number(value);if(Number.isFinite(n)&&n>0)return n;}
   return '-';
 }
 function normalizeLivePrice(live){
   const extended=Number(live?.extendedPrice);
   if(Number.isFinite(extended)&&extended>0)return extended;
-  const sameSnapshot=Number(live?.price ?? live?.current ?? live?.currentPrice);
-  return Number.isFinite(sameSnapshot)&&sameSnapshot>0?sameSnapshot:null;
+  return null;
 }
 
 let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null,currentPricesAppliedAt=null;

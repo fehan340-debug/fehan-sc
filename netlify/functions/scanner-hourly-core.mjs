@@ -4,6 +4,7 @@ import { getUniverse } from './scanner-universe-core.mjs';
 import { readBorrowCache } from './scanner-borrow-core.mjs';
 import { writeDataBundle, readDataBundle } from './scanner-data-bundle.mjs';
 import { readIpoCache } from './scanner-ipo-core.mjs';
+import { marketSession } from '../../market-calendar.mjs';
 
 const MASSIVE='https://api.massive.com';
 const SUPABASE_URL=()=>String(process.env.SUPABASE_URL||'').trim().replace(/\/+$/,'').replace(/\/rest\/v1$/i,'');
@@ -58,14 +59,6 @@ async function fourH(t,from,to){
   const buckets=new Map();
   for(const b of one){const d=etDate(b);if(!d)continue;const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',hour:'2-digit',hour12:false}).formatToParts(new Date(Number(b.t)));const h=Number(parts.find(x=>x.type==='hour')?.value);const bucket=Math.floor(Math.max(0,h-4)/4)*4+4;const k=`${d}|${bucket}`;const old=buckets.get(k);if(!old)buckets.set(k,{t:Number(b.t),o:Number(b.o),h:Number(b.h),l:Number(b.l),c:Number(b.c)});else{old.h=Math.max(old.h,Number(b.h));old.l=Math.min(old.l,Number(b.l));old.c=Number(b.c);}}
   return [...buckets.values()].filter(b=>Number(b.l)>0&&Number(b.h)>0&&Number(b.c)>0).sort((a,b)=>a.t-b.t);
-}
-function marketSession(){
-  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
-  const h=Number(parts.find(x=>x.type==='hour')?.value||0), m=Number(parts.find(x=>x.type==='minute')?.value||0), mins=h*60+m;
-  if(mins>=240&&mins<570)return 'pre';
-  if(mins>=570&&mins<960)return 'regular';
-  if(mins>=960&&mins<1200)return 'after';
-  return 'closed';
 }
 function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
 function tradeSession(ts,now=new Date()){const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);if(Number.isNaN(d.getTime()))return null;const a=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d),b=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);const g=o=>Object.fromEntries(o.map(x=>[x.type,x.value]));const A=g(a),B=g(b);if(A.year!==B.year||A.month!==B.month||A.day!==B.day)return null;const mins=Number(A.hour)*60+Number(A.minute);if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;}

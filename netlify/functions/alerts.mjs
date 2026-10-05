@@ -221,10 +221,9 @@ export async function evaluateUserAlerts(email,records,usersMap=null){
     // Treat missing numeric fields as unavailable, not as zero.
     // Number(null) === 0 would otherwise make a missing after-hours quote
     // fire a price alert with "$0.00".
-    // Price alerts accept the normalized live price first, with the same
-    // live-lane aliases used by the price writers. Never use a daily close
-    // or a missing value as the current alert price.
-    const rawPriceCandidates=[row?.extendedPrice,row?.price,row?.currentPrice,row?.current];
+    // Price alerts use only the normalized extended/live price. A missing quote
+    // is unavailable; it must never become zero or fall back to a daily close.
+    const rawPriceCandidates=[row?.extendedPrice];
     const rawPrice=rawPriceCandidates.map(Number).find(v=>Number.isFinite(v)&&v>0);
     const price=Number.isFinite(rawPrice)&&rawPrice>0?rawPrice:NaN;
     const rawChange=Number(row?.changePct);
@@ -333,10 +332,8 @@ export async function runAlertSweep(){
       const liveCandidates=[c,m];
       let extendedPrice=null;
       for(const live of liveCandidates){
-        // Both live price writers use the same five-minute lane. The Netlify
-        // fallback historically stored the value as `price` while the GitHub
-        // worker stored it as `extendedPrice`; accept either representation.
-        const direct=[live?.extendedPrice,live?.price,live?.currentPrice,live?.current];
+        // Both live price writers publish the authoritative extended price.
+        const direct=[live?.extendedPrice];
         for(const value of direct){
           const p=Number(value);
           if(Number.isFinite(p)&&p>0){extendedPrice=p;break;}

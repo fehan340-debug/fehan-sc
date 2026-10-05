@@ -60,20 +60,26 @@ function companyArticleMatches(article,ticker,row={}){
   if(tickerHit)return true;
   const tokens=companyTokens(row);
   const hits=tokens.filter(tok=>hay.includes(tok));
-  return hits.length>=2;
+  return hits.length>=1;
 }
 async function findInvestingNewsUrl(ticker,row={}){
   const searchUrl=INVESTING_SEARCH+encodeURIComponent(ticker);
   let html=await scrape(searchUrl);
-  let links=[...html.matchAll(/href=["'](\/equities\/[^"']+)["']/gi)].map(m=>m[1].split('#')[0].split('?')[0]);
-  if(!links.length) { html=await scrape(searchUrl,{browser:true}); links=[...html.matchAll(/href=["'](\/equities\/[^"']+)["']/gi)].map(m=>m[1].split('#')[0].split('?')[0]); }
-  const unique=[...new Set(links)];
-  const chosen=unique.find(x=>/-news(?:[\/]|$)/i.test(x))||unique.find(x=>/\/equities\//i.test(x));
+  let matches=[...html.matchAll(/<a[^>]+href=["'](\/equities\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  if(!matches.length) { html=await scrape(searchUrl,{browser:true}); matches=[...html.matchAll(/<a[^>]+href=["'](\/equities\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]; }
+  const t=cleanTicker(ticker).toLowerCase();
+  const tokens=companyTokens(row);
+  const candidates=matches.map(m=>({path:m[1].split('#')[0].split('?')[0],label:stripHtml(m[2]).toLowerCase()})).filter(x=>/-news(?:[\/]|$)|-company-profile$/i.test(x.path));
+  const exact=candidates.find(x=>{
+    const hay=`${x.path.toLowerCase()} ${x.label}`;
+    return hay.includes(t)||tokens.some(tok=>hay.includes(tok));
+  });
+  const chosen=exact||candidates.find(x=>/-news(?:[\/]|$)/i.test(x.path));
   if(!chosen)return null;
-  let path=chosen.replace(/-company-profile$/i,'-news').replace(/\/$/,'');
+  let path=chosen.path.replace(/-company-profile$/i,'-news').replace(/\/$/,'');
   if(!/-news(?:\/\d+)?$/i.test(path))path+='-news';
-  // Investing exposes the stock-news tabs from the same company-news route.
-  // Explicitly select the Company tab instead of the default Recent/market mix.
+  // The Company tab is the only requested news category. Keep the tab parameter
+  // on every page so pagination cannot silently fall back to market-wide news.
   const u=new URL(absoluteUrl(path));
   u.searchParams.set('tab','company');
   return u.toString();
@@ -186,8 +192,8 @@ async function readModelAutoEnabled(){const settings=await store.getSiteSettings
 function manifestEntry(r){
   return{ticker:r.ticker,name:r.name,newsUrl:r.newsUrl,newsCount:Array.isArray(r.news)?r.news.length:0,coverageStart:r.coverageStart,coverageEnd:r.coverageEnd,coverageComplete:Boolean(r.coverageComplete),initialized:Boolean(r.initialized),updatedAt:r.updatedAt,error:r.error||null};
 }
-async function saveNewsManifest(records,date){
-  const payload={version:2,ready:true,date,updatedAt:new Date().toISOString(),universeTickers:records.length,records:records.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'Investing.com-ar-via-ScrapingAnt',lookbackDays:183,storage:'per-ticker'};
+async function saveNewsManifest(records,date,readAt=null){
+  const payload={version:2,ready:true,date,readAt:readAt||new Date().toISOString(),updatedAt:new Date().toISOString(),universeTickers:records.length,records:records.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'Investing.com-ar-via-ScrapingAnt',lookbackDays:183,storage:'per-ticker'};
   await store.setJSON(NEWS_KEY,payload);
   return payload;
 }
@@ -209,8 +215,9 @@ export async function runNews({force=false}={}){
     const old=oldMap.get(ticker);if(old)liveManifest.set(ticker,old);
   }
   // Publish the current universe immediately, so the page is never empty while the worker runs.
-  await saveNewsManifest([...liveManifest.values()],today);
-  await store.setJSON(STATUS_KEY,{state:'collecting',date:today,total:tickers.length,processed:0,initial:0,incremental:0,failed:0,added:0,incomplete:0});
+  const readAt=new Date().toISOString();
+  await saveNewsManifest([...liveManifest.values()],today,readAt);
+  await store.setJSON(STATUS_KEY,{state:'collecting',date:today,readAt,total:tickers.length,processed:0,initial:0,incremental:0,failed:0,added:0,incomplete:0});
 
   for(const ticker of tickers){
     const row=byTicker.get(ticker)||{};
@@ -225,12 +232,12 @@ export async function runNews({force=false}={}){
         // cancelled after this point, the already collected news is still preserved.
         await store.setJSON(`${NEWS_TICKER_PREFIX}${ticker}`,snapshot);
         liveManifest.set(ticker,manifestEntry(snapshot));
-        await saveNewsManifest([...liveManifest.values()],today);
+        await saveNewsManifest([...liveManifest.values()],today,readAt);
       }});
       // The final snapshot is also written even when no page was successfully fetched.
       await store.setJSON(`${NEWS_TICKER_PREFIX}${ticker}`,r);
       liveManifest.set(ticker,manifestEntry(r));
-      await saveNewsManifest([...liveManifest.values()],today);
+      await saveNewsManifest([...liveManifest.values()],today,readAt);
       if(isInitial)initial++;else incremental++;
       added+=Number(r.addedCount||0);
       if(isInitial&&!r.coverageComplete)incomplete++;
@@ -248,11 +255,11 @@ export async function runNews({force=false}={}){
       }else{
         liveManifest.set(ticker,{ticker,name:row?.name||row?.companyName||'',newsUrl:null,newsCount:0,coverageStart:null,coverageEnd:null,coverageComplete:false,initialized:false,updatedAt:new Date().toISOString(),error:String(e?.message||e)});
       }
-      await saveNewsManifest([...liveManifest.values()],today);
+      await saveNewsManifest([...liveManifest.values()],today,readAt);
       incomplete++;
     }
     processed++;
-    await store.setJSON(STATUS_KEY,{state:'collecting',date:today,total:tickers.length,processed,initial,incremental,failed,added,incomplete,universeTickers:liveManifest.size});
+    await store.setJSON(STATUS_KEY,{state:'collecting',date:today,readAt,total:tickers.length,processed,initial,incremental,failed,added,incomplete,universeTickers:liveManifest.size});
   }
 
   // Remove news cache only for stocks that are no longer in the central universe.
@@ -263,9 +270,9 @@ export async function runNews({force=false}={}){
       liveManifest.delete(t);
     }
   }
-  const payload=await saveNewsManifest([...liveManifest.values()].filter(x=>currentSet.has(cleanTicker(x?.ticker))),today);
+  const payload=await saveNewsManifest([...liveManifest.values()].filter(x=>currentSet.has(cleanTicker(x?.ticker))),today,readAt);
   const finalState=failed===tickers.length?'error':(failed>0||incomplete>0?'partial':'ready');
-  await store.setJSON(STATUS_KEY,{state:finalState,date:today,completedAt:payload.updatedAt,total:tickers.length,processed,initial,incremental,failed,added,incomplete,universeTickers:payload.universeTickers});
+  await store.setJSON(STATUS_KEY,{state:finalState,date:today,readAt,completedAt:payload.updatedAt,total:tickers.length,processed,initial,incremental,failed,added,incomplete,universeTickers:payload.universeTickers});
   return{ok:true,date:today,total:tickers.length,processed,initial,incremental,failed,added,incomplete};
 }
 runNews({force:env('FORCE_NEWS_RUN')==='true'}).then(r=>{console.log(JSON.stringify(r,null,2));if(!r?.ok&&!r?.skipped)process.exit(1);}).catch(e=>{console.error(e);process.exit(1);});
