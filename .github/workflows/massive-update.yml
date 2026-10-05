@@ -18,11 +18,11 @@ on:
 
 concurrency:
   group: massive-five-minute-pipeline
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   update-massive:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -41,8 +41,8 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Verify Node runtime
+        run: node --version
 
       - name: Validate required secrets
         run: |
