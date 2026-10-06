@@ -1,6 +1,6 @@
 import { getDataStore } from "../../lib.js";
 import { currentUser } from "../../lib.js";
-import { marketSession } from "../../market-calendar.mjs";
+import { marketSession, etParts } from "../../market-calendar.mjs";
 
 const BASE="https://api.massive.com";
 const KEY=()=>String(process.env.MASSIVE_API_KEY||"").trim();
@@ -18,11 +18,8 @@ function tradeSession(ts,now=new Date()){
   const d=new Date(ms); if(Number.isNaN(d.getTime()))return null;
   const a=etParts(d), b=etParts(now);
   if(a.year!==b.year||a.month!==b.month||a.day!==b.day)return null;
-  const mins=Number(a.hour)*60+Number(a.minute);
-  if(mins>=240&&mins<570)return 'pre';
-  if(mins>=570&&mins<960)return 'regular';
-  if(mins>=960&&mins<1200)return 'after';
-  return null;
+  const session=marketSession(d);
+  return session==='closed'?null:session;
 }
 async function getSnapshot(tickers){
   const key=KEY(); if(!key) throw new Error("MASSIVE_API_KEY is not configured.");

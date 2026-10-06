@@ -14,7 +14,24 @@ const env = name => String(process.env[name] || '').trim();
 const cleanTicker = v => String(v || '').trim().toUpperCase().replace(/[^A-Z0-9._-]/g, '');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function stripHtml(s){return String(s||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/\s+/g,' ').trim();}
-function absoluteUrl(href){try{return new URL(href,'https://sa.investing.com').toString();}catch{return null;}}
+function decodeHtmlUrl(value){
+  return String(value||'')
+    .replace(/&amp;/gi,'&')
+    .replace(/&quot;/gi,'"')
+    .replace(/&#39;/gi,"'")
+    .replace(/\\u002F/gi,'/')
+    .replace(/\\u003A/gi,':')
+    .replace(/\\u0026/gi,'&');
+}
+function absoluteUrl(href){
+  try{return new URL(decodeHtmlUrl(String(href||'')).trim(),'https://sa.investing.com').toString();}
+  catch{return null;}
+}
+function investingPath(href){
+  const u=absoluteUrl(href);
+  if(!u)return null;
+  try{const x=new URL(u);if(!/(^|\.)investing\.com$/i.test(x.hostname))return null;return x;}catch{return null;}
+}
 function parseDate(text){
   const s=String(text||'');
   const months={يناير:0,فبراير:1,مارس:2,أبريل:3,ابريل:3,مايو:4,يونيو:5,يوليو:6,أغسطس:7,اغسطس:7,سبتمبر:8,أكتوبر:9,اكتوبر:9,نوفمبر:10,ديسمبر:11,January:0,February:1,March:2,April:3,May:4,June:5,July:6,August:7,September:8,October:9,November:10,December:11};
@@ -50,50 +67,71 @@ function companyTokens(row={}){
     .map(x=>x.trim().toLowerCase())
     .filter(x=>x.length>=3);
 }
+function isBroadMarketArticle(article){
+  let pathname='';try{pathname=new URL(String(article?.url||'')).pathname.toLowerCase();}catch{}
+  return /\/news\/(stock-market-news|indices-news|commodities-news|forex-news|economy|economic-indicators)(?:\/|$)/i.test(pathname);
+}
 function companyArticleMatches(article,ticker,row={}){
+  if(isBroadMarketArticle(article))return false;
   const t=cleanTicker(ticker).toLowerCase();
-  const hay=`${String(article?.title||'')} ${String(article?.summary||'')}`.toLowerCase();
-  // Investing's company tab is the primary source. This second gate is a hard
-  // safety filter so general market/gold/index articles can never enter the
-  // ticker cache if Investing serves the broader news list to the scraper.
-  const tickerHit=Boolean(t && hay.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean).includes(t.toUpperCase()));
+  const hay=`${String(article?.title||'')} ${String(article?.summary||'')} ${String(article?.context||'')} ${String(article?.url||'')}`.toLowerCase();
+  const tickerHit=Boolean(t && new RegExp(`(?:^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:$|[^a-z0-9])`,'i').test(hay));
   if(tickerHit)return true;
   const tokens=companyTokens(row);
-  const hits=tokens.filter(tok=>hay.includes(tok));
-  return hits.length>=1;
+  return tokens.some(tok=>hay.includes(tok));
 }
 async function findInvestingNewsUrl(ticker,row={}){
   const searchUrl=INVESTING_SEARCH+encodeURIComponent(ticker);
   let html=await scrape(searchUrl);
-  let matches=[...html.matchAll(/<a[^>]+href=["'](\/equities\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
-  if(!matches.length) { html=await scrape(searchUrl,{browser:true}); matches=[...html.matchAll(/<a[^>]+href=["'](\/equities\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]; }
+  const readCandidates=(source)=>{
+    const out=[];
+    const seen=new Set();
+    const add=(href,label='')=>{
+      const u=investingPath(href);if(!u||!/\/equities\//i.test(u.pathname))return;
+      const path=u.pathname.replace(/\/$/,'');
+      if(!/^\/equities\/[A-Za-z0-9._%~-]+(?:\/[0-9]+)?$/i.test(path))return;
+      const key=path.toLowerCase();if(seen.has(key))return;seen.add(key);out.push({path,label:stripHtml(label).toLowerCase()});
+    };
+    for(const m of String(source||'').matchAll(/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi))add(m[2],m[3]);
+    // Scrapers sometimes strip anchor tags but retain the absolute/relative URL.
+    for(const m of String(source||'').matchAll(/(?:https?:\/\/sa\.investing\.com)?\/equities\/[A-Za-z0-9._%~-]+(?:-news|-company-profile)(?:\/[0-9]+)?/gi))add(m[0],'');
+    // Canonical/meta links are a reliable fallback when the search-result cards are
+    // rendered outside normal <a> elements.
+    for(const m of String(source||'').matchAll(/<(?:link|meta)\b[^>]+(?:href|content)\s*=\s*(["'])(.*?)\1/gi))add(m[2],'');
+    return out;
+  };
+  let candidates=readCandidates(html);
+  if(!candidates.length){html=await scrape(searchUrl,{browser:true});candidates=readCandidates(html);}
   const t=cleanTicker(ticker).toLowerCase();
   const tokens=companyTokens(row);
-  const candidates=matches.map(m=>({path:m[1].split('#')[0].split('?')[0],label:stripHtml(m[2]).toLowerCase()})).filter(x=>/-news(?:[\/]|$)|-company-profile$/i.test(x.path));
   const exact=candidates.find(x=>{
     const hay=`${x.path.toLowerCase()} ${x.label}`;
     return hay.includes(t)||tokens.some(tok=>hay.includes(tok));
   });
-  const chosen=exact||candidates.find(x=>/-news(?:[\/]|$)/i.test(x.path));
+  const chosen=exact||candidates.find(x=>/-news(?:\/|$)/i.test(x.path));
   if(!chosen)return null;
-  let path=chosen.path.replace(/-company-profile$/i,'-news').replace(/\/$/,'');
+  let path=chosen.path.replace(/\/$/,'');
+  path=path.replace(/-company-profile$/i,'').replace(/-historical-data$/i,'').replace(/-dividends$/i,'').replace(/-statistics$/i,'').replace(/-technical$/i,'');
   if(!/-news(?:\/\d+)?$/i.test(path))path+='-news';
-  // The Company tab is the only requested news category. Keep the tab parameter
-  // on every page so pagination cannot silently fall back to market-wide news.
   const u=new URL(absoluteUrl(path));
   u.searchParams.set('tab','company');
   return u.toString();
 }
 function extractArticles(html,{ticker,row}={}){
-  const out=new Map(),re=/<a[^>]+href=["'](\/news\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const out=new Map();
+  const source=String(html||'');
+  const re=/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
   let sourceOrder=0;
-  for(const m of html.matchAll(re)){
-    const url=absoluteUrl(m[1]),title=stripHtml(m[2]);if(!url||!title||title.length<8)continue;
+  for(const m of source.matchAll(re)){
+    const href=decodeHtmlUrl(m[2]);
+    const pathUrl=investingPath(href);
+    if(!pathUrl||!/\/news\//i.test(pathUrl.pathname))continue;
+    const url=pathUrl.toString(),title=stripHtml(m[3]);if(!title||title.length<8)continue;
     if(/^(أخبار|تحليلات|المزيد|قراءة المزيد|إعلانات)$/i.test(title))continue;
-    const idx=m.index??0,around=stripHtml(html.slice(Math.max(0,idx-180),Math.min(html.length,idx+2200)));
-    const dt=parseDate(around),sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),source=sourceMatch?sourceMatch[1].trim():'Investing.com';
-    let summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
-    const article={url,title,summary,publishedDate:dt?dt.toISOString().slice(0,10):null,source,sourceOrder:sourceOrder++};
+    const idx=m.index??0,around=stripHtml(source.slice(Math.max(0,idx-260),Math.min(source.length,idx+2600)));
+    const dt=parseDate(around),sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),articleSource=sourceMatch?sourceMatch[1].trim():'Investing.com';
+    const summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
+    const article={url,title,summary,context:around.slice(0,1400),publishedDate:dt?dt.toISOString().slice(0,10):null,source:articleSource,sourceOrder:sourceOrder++};
     if(!companyArticleMatches(article,ticker,row))continue;
     const key=url.split('?')[0];
     if(!out.has(key))out.set(key,article);
@@ -106,7 +144,7 @@ function pageUrl(base,page){
   u.pathname=u.pathname.replace(/\/$/,'')+'/'+page;
   return u.toString();
 }
-function toNewsItem(a,page=1){return{id:Buffer.from(a.url).toString('base64url').slice(0,64),url:a.url,title:a.title,titleAr:a.title,summary:a.summary,summaryAr:a.summary,source:a.source||'Investing.com',publishedAt:a.publishedDate,language:'ar',impactAr:classifyImpact(`${a.title} ${a.summary}`),sourceOrder:(Number(page)||1)*100000+(Number(a.sourceOrder)||0),addedAt:new Date().toISOString()};}
+function toNewsItem(a,page=1){return{id:Buffer.from(a.url).toString('base64url').slice(0,64),url:a.url,title:a.title,titleAr:a.title,summary:a.summary,summaryAr:a.summary,source:a.source||'Investing.com',publishedAt:a.publishedDate,language:'ar',companyVerified:true,impactAr:classifyImpact(`${a.title} ${a.summary}`),sourceOrder:(Number(page)||1)*100000+(Number(a.sourceOrder)||0),addedAt:new Date().toISOString()};}
 function sortNews(items){
   return [...items].sort((a,b)=>{
     const dateCmp=String(b?.publishedAt||'').localeCompare(String(a?.publishedAt||''));
@@ -135,7 +173,7 @@ function buildTickerRecord(ticker,row,map,newsUrl,cutoff,extra={}){
 async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
   const old=normalizeSeed(seed),existingNews=Array.isArray(old?.news)?old.news:[];
   const companyName=row?.name||row?.companyName||row?.company_name||'';
-  const oldCompanyNews=existingNews.filter(x=>companyArticleMatches({title:x?.title,summary:x?.summary},ticker,row));
+  const oldCompanyNews=existingNews.filter(x=>x?.companyVerified===true||companyArticleMatches({url:x?.url,title:x?.title,summary:x?.summary},ticker,row));
   let newsUrl=old?.newsUrl||null;
   if(newsUrl){
     try{const u=new URL(newsUrl);u.searchParams.set('tab','company');newsUrl=u.toString();}catch{newsUrl=null;}
@@ -243,6 +281,7 @@ export async function runNews({force=false}={}){
       if(isInitial&&!r.coverageComplete)incomplete++;
       if(r.error)tickerHadError=true;
       if(tickerHadError)failed++;
+      console.log(JSON.stringify({ticker,newsUrl:r.newsUrl||null,articlesSaved:Array.isArray(r.news)?r.news.length:0,added:Number(r.addedCount||0),pagesFetched:Number(r.pagesFetched||0),coverageComplete:Boolean(r.coverageComplete),error:r.error||null}));
     }catch(e){
       failed++;
       // Never replace an existing ticker cache with an empty result after an error.

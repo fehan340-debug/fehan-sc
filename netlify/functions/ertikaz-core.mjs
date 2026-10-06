@@ -3,16 +3,15 @@ import { getDataStore, getSiteSettings } from '../../lib.js';
 // Ertikaz model v1
 // Daily: RSI < 30.
 // Cached daily/split/short fields come from the central scanner cache.
-// 4H: base formation -> 5 real trading sessions -> resistance -> support retest -> liquidity sweep.
+// Daily candles: base -> resistance at any later session while the base holds -> next/second-day support retest -> 5 real trading sessions -> liquidity sweep.
 // The model is deterministic and rule-based; it does not infer intent and does not use future data
 // beyond the point at which each condition is evaluated.
 const MASSIVE='https://api.massive.com';
 const RESULT_KEY='scanner-models-ertikaz-v1';
 const STATUS_KEY='scanner-models-ertikaz-status-v1';
-const HISTORY_KEY='scanner-models-ertikaz-history-v1';
+const HISTORY_KEY='scanner-models-ertikaz-history-daily-v2';
 const CONFIG_KEY='scanner-models-ertikaz-config-v1';
 const CONCURRENCY=5;
-const DEFAULT_LOOKBACK_DAYS=140;
 const MAX_LIQUIDITY_SWEEP_PCT=10;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const apiKey=()=>String(process.env.MASSIVE_API_KEY||'').trim();
@@ -39,27 +38,15 @@ async function massive(path){
   }
   throw new Error(last||'Massive request failed.');
 }
-function normalize4h(b){
+function normalizeDaily(b){
   const t=Number(b?.t),o=Number(b?.o),h=Number(b?.h),l=Number(b?.l),c=Number(b?.c),v=Number(b?.v||0);
   if(!Number.isFinite(t)||![o,h,l,c].every(Number.isFinite)||h<=0||l<=0||c<=0)return null;
   const date=etDate(t); if(!date)return null;
   return {t,date,open:o,high:h,low:l,close:c,volume:Number.isFinite(v)?v:null};
 }
-async function fetch4H(ticker,from,to){
-  const direct=(await massive(`/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/4/hour/${from}/${to}?adjusted=true&sort=asc&limit=50000`)).results||[];
-  const valid=direct.map(normalize4h).filter(Boolean);
-  if(valid.length)return valid;
-  // Fallback for providers/plans that do not expose native 4H aggregates.
-  const one=(await massive(`/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/1/hour/${from}/${to}?adjusted=true&sort=asc&limit=50000`)).results||[];
-  const rows=one.map(normalize4h).filter(Boolean);
-  const buckets=new Map();
-  for(const b of rows){
-    const dt=new Date(b.t), hour=Number(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',hourCycle:'h23'}).format(dt));
-    const bucket=Math.floor(Math.max(0,hour-4)/4)*4+4;
-    const key=`${b.date}|${bucket}`; const old=buckets.get(key);
-    if(!old)buckets.set(key,{...b}); else {old.high=Math.max(old.high,b.high);old.low=Math.min(old.low,b.low);old.close=b.close;old.t=b.t;}
-  }
-  return [...buckets.values()].sort((a,b)=>a.t-b.t);
+async function fetchDaily(ticker,from,to){
+  const direct=(await massive(`/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/1/day/${from}/${to}?adjusted=true&sort=asc&limit=50000`)).results||[];
+  return direct.map(normalizeDaily).filter(Boolean).sort((a,b)=>a.t-b.t);
 }
 async function loadHistory(t){return await getDataStore().get(`${HISTORY_KEY}:${t}`,{type:'json',consistency:'strong'}).catch(()=>null);}
 async function saveHistory(t,value){await getDataStore().setJSON(`${HISTORY_KEY}:${t}`,value);}
@@ -73,80 +60,225 @@ function rsiDaily(row){const n=Number(row?.rsi);return Number.isFinite(n)?n:null
 function shortAvailable(row){const n=Number(row?.shortShares);return Number.isFinite(n)?n:null;}
 
 export function detectErtikazSequence(bars,splitDate){
-  const b=bars.filter(x=>x.date>=splitDate&&Number.isFinite(Number(x.low))&&Number(x.low)>0).sort((a,z)=>a.t-z.t);
-  if(!b.length)return {base:null,resistance:null,support:null,liquidity:null};
+  const b=(Array.isArray(bars)?bars:[])
+    .filter(x=>x?.date>=splitDate&&Number.isFinite(Number(x?.low))&&Number(x.low)>0&&Number.isFinite(Number(x?.high))&&Number(x.high)>0&&Number.isFinite(Number(x?.close))&&Number(x.close)>0)
+    .sort((a,z)=>a.t-z.t);
+  if(!b.length)return {base:null,resistance:null,support:null,liquidity:null,liquiditySweeps:[]};
+
   const dates=[...new Set(b.map(x=>x.date))].sort();
   const dateIndex=new Map(dates.map((d,i)=>[d,i]));
+  const MAX_SWEEP=MAX_LIQUIDITY_SWEEP_PCT;
+  const MIN_RECOVERY_SESSIONS=2;
 
-  // Chronological state machine; the anchor is selected directly from 4H lows.
-  // Before five trading sessions have elapsed, any lower 4H low invalidates the
-  // current base immediately and becomes the new base. This is what allows a
-  // later true low such as 4.92 to replace an earlier 7.40 even if resistance
-  // was already seen above the earlier low.
-  let baseBar=null, resistanceBar=null, supportBar=null;
-  for(const x of b){
-    if(!baseBar){baseBar=x;continue;}
-    const baseIdx=dateIndex.get(baseBar.date);
-    const heldDates=baseIdx===undefined?[]:dates.slice(baseIdx+1,baseIdx+6);
-    const holdConfirmed=heldDates.length>=5&&String(x.date)>=String(heldDates[4]);
+  // IMPORTANT:
+  // - The base is the lowest daily Low reached by the current setup.
+  // - A lower Low during the first five sessions replaces the base and restarts
+  //   the five-session stabilization count.
+  // - Resistance may appear on ANY later daily candle; its absence never creates
+  //   a new base by itself.
+  // - Support is dynamic after resistance: keep the lowest Low above the base
+  //   and within +5% of the base. A later lower-but-still-above-base Low updates it.
+  // - Five-session stabilization is independent of resistance/support timing.
+  // - Liquidity is checked ONLY after five sessions have completed.
+  // - Multiple liquidity sweeps are allowed. Every sweep must recover above the
+  //   base, then have at least TWO COMPLETE daily sessions above the base before
+  //   another sweep can be accepted.
+  // - No local-pivot/swing-pivot logic is used.
 
-    if(!holdConfirmed&&Number(x.low)<Number(baseBar.low)-1e-9){
-      // A break before five real trading sessions creates the new base immediately.
-      baseBar=x;
-      resistanceBar=null;
-      supportBar=null;
+  let baseIndex=0;
+  let guard=0;
+
+  while(baseIndex<b.length && guard++<b.length+2){
+    const baseBar=b[baseIndex];
+    const basePrice=Number(baseBar.low);
+    const baseDateIndex=dateIndex.get(baseBar.date);
+    if(baseDateIndex===undefined)break;
+
+    const holdDates=dates.slice(baseDateIndex+1,baseDateIndex+6);
+    const holdThrough=holdDates.length>=5?holdDates[4]:null;
+    const lowerDuringHold=b.find(x=>{
+      const di=dateIndex.get(x.date);
+      return di>baseDateIndex&&di<=baseDateIndex+5&&Number(x.low)<basePrice-1e-9;
+    });
+
+    // A lower Low before the five sessions are complete creates the new base.
+    if(lowerDuringHold){
+      baseIndex=b.findIndex(x=>x.t===lowerDuringHold.t);
       continue;
     }
 
-    // Resistance and support are allowed to form before the five-session hold is
-    // complete. If the base breaks during that period they are cleared above and
-    // must be rebuilt from the new base. Liquidity is the only condition gated by
-    // the five-session hold.
-    if(!resistanceBar&&x.t>baseBar.t){
-      const basePrice=Number(baseBar.low), h=Number(x.high);
-      if(h>=basePrice*1.15-1e-9&&h<=basePrice*1.25+1e-9)resistanceBar=x;
-      continue;
-    }
-    if(resistanceBar&&!supportBar&&x.t>resistanceBar.t){
-      const basePrice=Number(baseBar.low), low=Number(x.low);
-      if(low>=basePrice-1e-9&&low<=basePrice*1.05+1e-9)supportBar=x;
-      continue;
-    }
-  }
+    const holdConfirmed=holdDates.length>=5;
+    const base={
+      price:basePrice,
+      date:baseBar.date,
+      index:baseIndex,
+      holdThrough,
+      holdSessions:holdDates.length,
+      holdConfirmed
+    };
 
-  if(!baseBar)return {base:null,resistance:null,support:null,liquidity:null};
-  const basePrice=Number(baseBar.low), baseDate=baseBar.date, baseIdx=dateIndex.get(baseDate);
-  const holdDates=baseIdx===undefined?[]:dates.slice(baseIdx+1,baseIdx+6);
-  const holdConfirmed=holdDates.length>=5;
-  const base={price:basePrice,date:baseDate,index:b.indexOf(baseBar),holdThrough:holdConfirmed?holdDates[4]:null,holdSessions:holdDates.length,holdConfirmed};
+    const resistanceLow=basePrice*1.15;
+    const resistanceHigh=basePrice*1.25;
+    let resistance=null;
+    let resistanceIndex=-1;
+    let invalidBaseIndex=null;
 
-  const resistance=resistanceBar?{price:Number(resistanceBar.high),date:resistanceBar.date,high:Number(resistanceBar.high),zoneLow:basePrice*1.15,zoneHigh:basePrice*1.25}:null;
-  const support=supportBar?{price:Number(supportBar.low),date:supportBar.date,zoneLow:basePrice,zoneHigh:basePrice*1.05}:null;
-
-  let liquidity=null;
-  if(holdConfirmed&&resistanceBar&&supportBar){
-    const supportT=Number(supportBar.t);
-    const afterSupport=b.filter(x=>x.t>supportT);
-    for(const q of afterSupport){
-      const qLow=Number(q.low);
-      if(!Number.isFinite(qLow)||qLow>=basePrice-1e-9)continue;
-      const sweepPct=((basePrice-qLow)/basePrice)*100;
-      const idx=dateIndex.get(q.date); if(idx===undefined)continue;
-      const allowedDates=new Set(dates.slice(idx,idx+2));
-      const recovery=afterSupport.find(x=>allowedDates.has(x.date)&&x.t>=q.t&&Number(x.close)>Number(supportBar.low));
-      if(sweepPct<=MAX_LIQUIDITY_SWEEP_PCT+1e-9&&recovery){
-        liquidity={sweepDate:q.date,sweepLow:qLow,recoveryDate:recovery.date,recoveryClose:Number(recovery.close),sweepPct:Number(sweepPct.toFixed(2)),maxSweepPct:Number(sweepPct.toFixed(2))};
+    // Resistance can take 1, 2, 5, or many sessions. Only a lower Low changes
+    // the base while we are still before stabilization.
+    for(let i=baseIndex+1;i<b.length;i++){
+      const bar=b[i];
+      const di=dateIndex.get(bar.date);
+      if(!holdConfirmed&&di<=baseDateIndex+5&&Number(bar.low)<basePrice-1e-9){
+        invalidBaseIndex=i;
         break;
       }
-      // The sweep either exceeded 10% or failed to recover above support within
-      // the allowed next trading session. The old base is invalid; restart the
-      // entire sequence from the failed sweep low as the new base.
-      const restartBars=b.filter(x=>x.t>=q.t);
-      return detectErtikazSequence(restartBars,splitDate);
+      const high=Number(bar.high);
+      if(high>=resistanceLow-1e-9&&high<=resistanceHigh+1e-9){
+        resistance={
+          price:high,
+          date:bar.date,
+          high,
+          index:i,
+          zoneLow:resistanceLow,
+          zoneHigh:resistanceHigh
+        };
+        resistanceIndex=i;
+        break;
+      }
     }
+
+    if(invalidBaseIndex!==null){
+      baseIndex=invalidBaseIndex;
+      continue;
+    }
+
+    // No resistance yet is NOT a failed base. Keep the base and continue the
+    // search with the current daily history.
+    if(!resistance){
+      return {base,resistance:null,support:null,liquidity:null,liquiditySweeps:[]};
+    }
+
+    // Support is dynamic. Starting after resistance, every Low that stays above
+    // the base and is <= +5% is a support candidate. The lowest such Low wins,
+    // even if it occurs several sessions later. This also allows 5.10 -> 5.08
+    // to update the support to 5.08 while the base remains 5.00.
+    let support=null;
+    let supportIndex=-1;
+    const supportHigh=basePrice*1.05;
+    for(let i=resistanceIndex+1;i<b.length;i++){
+      const bar=b[i];
+      const low=Number(bar.low);
+      if(low<basePrice-1e-9){
+        // Before stabilization this is a new base. After stabilization it may
+        // be a valid liquidity sweep, so do not break here after holdConfirmed.
+        if(!holdConfirmed){
+          invalidBaseIndex=i;
+          break;
+        }
+        continue;
+      }
+      if(low>=basePrice-1e-9&&low<=supportHigh+1e-9){
+        if(!support||low<support.price-1e-9||(Math.abs(low-support.price)<=1e-9&&bar.t>support.t)){
+          support={price:low,date:bar.date,index:i,zoneLow:basePrice,zoneHigh:supportHigh};
+          supportIndex=i;
+        }
+      }
+    }
+
+    if(invalidBaseIndex!==null){
+      baseIndex=invalidBaseIndex;
+      continue;
+    }
+
+    // Liquidity is blocked until five complete sessions AFTER the base.
+    if(!holdConfirmed){
+      return {base,resistance,support,liquidity:null,liquiditySweeps:[]};
+    }
+
+    const holdEndIndex=dateIndex.get(holdThrough);
+    const searchStart=Math.max(baseIndex+1,holdEndIndex===undefined?baseIndex+1:dates.findIndex(d=>d===holdThrough)+1);
+    const liquiditySweeps=[];
+    let recoveryAnchorIndex=null;
+
+    for(let i=searchStart;i<dates.length;i++){
+      const date=dates[i];
+      const dayBars=b.filter(x=>x.date===date);
+      if(!dayBars.length)continue;
+
+      // After each sweep, the recovery day itself does not count. We need two
+      // COMPLETE sessions with both Low and Close above the locked base.
+      if(recoveryAnchorIndex!==null){
+        if(i<=recoveryAnchorIndex)continue;
+        const dayLows=dayBars.map(x=>Number(x.low)).filter(Number.isFinite);
+        const dayCloses=dayBars.map(x=>Number(x.close)).filter(Number.isFinite);
+        const stayedAbove=dayLows.length>0&&dayCloses.length>0&&
+          Math.min(...dayLows)>basePrice+1e-9&&Math.min(...dayCloses)>basePrice+1e-9;
+        if(stayedAbove){
+          const recoveredSessions=i-recoveryAnchorIndex;
+          if(recoveredSessions<MIN_RECOVERY_SESSIONS)continue;
+          recoveryAnchorIndex=null;
+        }else{
+          // Recovery was not stable for two complete sessions yet. Do not count
+          // this dip as another sweep; keep waiting for two consecutive sessions.
+          continue;
+        }
+      }
+
+      const q=dayBars.find(x=>Number(x.low)<basePrice-1e-9);
+      if(!q)continue;
+
+      const qLow=Number(q.low);
+      const sweepPct=((basePrice-qLow)/basePrice)*100;
+      const qIndex=b.findIndex(x=>x.t===q.t);
+      if(qIndex<0)continue;
+
+      if(sweepPct>MAX_SWEEP+1e-9){
+        // Beyond the allowed sweep range: this is a real new lower base.
+        baseIndex=qIndex;
+        break;
+      }
+
+      // Valid sweep: it must close above the base on the same day or next day.
+      const di=dateIndex.get(q.date);
+      const recoveryDates=new Set(dates.slice(di,di+2));
+      let recovery=null;
+      for(let j=qIndex;j<b.length;j++){
+        const rb=b[j];
+        if(!recoveryDates.has(rb.date))break;
+        if(Number(rb.close)>basePrice+1e-9){recovery=rb;break;}
+      }
+      if(!recovery){
+        // It did not recover in time, so this is not a valid sweep. Treat the
+        // lower Low as the new base and restart the whole sequence.
+        baseIndex=qIndex;
+        break;
+      }
+
+      const sweep={
+        sweepDate:q.date,
+        sweepLow:qLow,
+        recoveryDate:recovery.date,
+        recoveryClose:Number(recovery.close),
+        sweepPct:Number(sweepPct.toFixed(2)),
+        maxSweepPct:MAX_SWEEP
+      };
+      liquiditySweeps.push(sweep);
+
+      // Recovery day is excluded from the two-session count.
+      recoveryAnchorIndex=dateIndex.get(recovery.date);
+    }
+
+    // A sweep deeper than the allowed range or a failed recovery can create a
+    // new base. Re-run the entire sequence from that exact lower-low candle.
+    if(baseIndex!==b.findIndex(x=>x.t===baseBar.t))continue;
+
+    const liquidity=liquiditySweeps.at(-1)||null;
+    return {base,resistance,support,liquidity,liquiditySweeps};
   }
-  return {base,resistance,support,liquidity};
+
+  return {base:null,resistance:null,support:null,liquidity:null,liquiditySweeps:[]};
 }
+
 export function evaluateErtikazRules(ticker,row,bars,nowDate){
   const rsi=rsiDaily(row), short=shortAvailable(row), splitDate=String(row?.splitDate||'');
   const elapsed=calendarDays(splitDate,nowDate);
@@ -158,54 +290,57 @@ export function evaluateErtikazRules(ticker,row,bars,nowDate){
     {key:'baseHold',label:'المحافظة على القاع 5 جلسات تداول فعلية',passed:Boolean(seq.base?.holdConfirmed),value:seq.base?.price??null,detail:seq.base?`قاع ${seq.base.price.toFixed(4)} — ${seq.base.holdConfirmed?`ثبت حتى ${seq.base.holdThrough}`:`لم يكتمل الثبات (${seq.base.holdSessions}/5 جلسات)`}`:'لم يتم تحديد قاع'},
     {key:'resistance',label:'اختبار المقاومة +15% إلى +25% من القاع',passed:Boolean(seq.resistance),value:seq.resistance?.high??null,detail:seq.resistance?`اختبار ${seq.resistance.high.toFixed(4)} — المنطقة ${seq.resistance.zoneLow.toFixed(4)} إلى ${seq.resistance.zoneHigh.toFixed(4)}`:'لم يحدث اختبار مقاومة ضمن المنطقة المحددة'},
     {key:'supportRetest',label:'العودة لاختبار الدعم دون كسر القاع وبحد أقصى +5%',passed:Boolean(seq.support),value:seq.support?.price??null,detail:seq.support?`إعادة اختبار ${seq.support.price.toFixed(4)} بعد المقاومة`:'لم تحدث إعادة اختبار للدعم بعد المقاومة'},
-    {key:'liquiditySweep',label:'سحب سيولة حتى 10% تحت القاع والعودة خلال جلسة أو أقل',passed:Boolean(seq.liquidity),value:seq.liquidity?.sweepPct??null,detail:seq.liquidity?`سحب سيولة ${seq.liquidity.sweepPct.toFixed(2)}% إلى ${seq.liquidity.sweepLow.toFixed(4)} ثم عودة ${seq.liquidity.recoveryClose.toFixed(4)} في ${seq.liquidity.recoveryDate}`:'لم يتحقق سحب السيولة بالتسلسل المطلوب — إذا تجاوز السحب 10% يُلغى القاع ويبدأ البحث عن قاع جديد'}
+    {key:'liquiditySweep',label:'سحب سيولة حتى 10% تحت القاع والعودة خلال جلسة أو أقل',passed:Boolean(seq.liquidity),value:seq.liquidity?.sweepPct??null,detail:seq.liquidity?`آخر سحب ${seq.liquidity.sweepPct.toFixed(2)}% إلى ${seq.liquidity.sweepLow.toFixed(4)} ثم عودة ${seq.liquidity.recoveryClose.toFixed(4)} في ${seq.liquidity.recoveryDate} — إجمالي السحوبات ${seq.liquiditySweeps?.length||0}`:'لم يتحقق سحب السيولة بالتسلسل المطلوب — يجب أن يسبق كل سحب لاحق جلستان كاملتان فوق القاع'}
   ];
   const all=checks.every(x=>x.passed);
   const name=String(row?.name||row?.companyName||row?.company_name||'');
-  return {version:1,ticker,name,model:'ارتكاز',qualified:all,statusLabel:all?'ارتكاز مكتمل':'ارتكاز — شروط غير مكتملة',splitDate,elapsedDays:elapsed,rsiDaily:rsi,shortAvailable:short,base:seq.base,resistance:seq.resistance,supportRetest:seq.support,liquiditySweep:seq.liquidity,checks,passedCount:checks.filter(x=>x.passed).length,totalChecks:checks.length,last4hDate:bars.at(-1)?.date||null,bars4hCount:bars.length,updatedAt:new Date().toISOString()};
+  return {version:1,ticker,name,model:'ارتكاز',qualified:all,statusLabel:all?'ارتكاز مكتمل':'ارتكاز — شروط غير مكتملة',splitDate,elapsedDays:elapsed,rsiDaily:rsi,shortAvailable:short,base:seq.base,resistance:seq.resistance,supportRetest:seq.support,liquiditySweep:seq.liquidity,liquiditySweeps:seq.liquiditySweeps||[],checks,passedCount:checks.filter(x=>x.passed).length,totalChecks:checks.length,lastDailyDate:bars.at(-1)?.date||null,barsDailyCount:bars.length,updatedAt:new Date().toISOString()};
 }
 
-export async function getErtikazConfig(){const raw=await getDataStore().get(CONFIG_KEY,{type:'json',consistency:'strong'}).catch(()=>null);return{version:1,lookbackDays:Number.isFinite(Number(raw?.lookbackDays))?clamp(Number(raw.lookbackDays),60,365):DEFAULT_LOOKBACK_DAYS};}
-export async function saveErtikazConfig(lookbackDays){const n=Number(lookbackDays);if(!Number.isFinite(n)||n<60||n>365)throw new Error('فترة بيانات 4 ساعات يجب أن تكون بين 60 و365 يومًا.');await getDataStore().setJSON(CONFIG_KEY,{version:1,lookbackDays:n,updatedAt:new Date().toISOString()});return getErtikazConfig();}
+export async function getErtikazConfig(){
+  const raw=await getDataStore().get(CONFIG_KEY,{type:'json',consistency:'strong'}).catch(()=>null);
+  return{version:2,historyTimeframe:'1D'};
+}
+export async function saveErtikazConfig(){
+  await getDataStore().setJSON(CONFIG_KEY,{version:2,historyTimeframe:'1D',updatedAt:new Date().toISOString()});
+  return getErtikazConfig();
+}
 export async function collectErtikazData({force=false}={}){
-  const store=getDataStore(),cache=await getCache(),now=todayET(),config=await getErtikazConfig();
+  const store=getDataStore(),cache=await getCache(),now=todayET();
   const rows=Array.isArray(cache?.records)?cache.records:[];
   const tickers=[...new Set(rows.map(x=>cleanTicker(x?.ticker)).filter(Boolean))];
   if(!tickers.length)return{ok:false,error:'لا توجد أسهم في الكاش المركزي.'};
   let index=0,processed=0,updated=0,unchanged=0,failed=0; const histories={};
-  await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',date:now,total:tickers.length,processed:0,updated:0,unchanged:0,failed:0});
+  await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',timeframe:'1D',date:now,total:tickers.length,processed:0,updated:0,unchanged:0,failed:0});
   const byTicker=new Map(rows.map(x=>[cleanTicker(x?.ticker),x]));
   const worker=async()=>{while(true){const i=index++;if(i>=tickers.length)return;const t=tickers[i];const row=byTicker.get(t)||{};try{
     const splitDate=String(row?.splitDate||''); if(!/^\d{4}-\d{2}-\d{2}$/.test(splitDate))throw new Error('تاريخ التقسيم غير متاح');
     const old=await loadHistory(t); let bars=Array.isArray(old?.bars)?old.bars:[];
-    const from=old?.initialized&&Array.isArray(old?.bars)&&old.bars.length>=20?(old?.lastDate||nowMinusDays(7)):splitDate;
+    const from=old?.initialized&&bars.length?(old?.lastDate||splitDate):splitDate;
     if(old?.initialized){
-      const fresh=await fetch4H(t,from,now); const map=new Map(bars.map(x=>[x.t,x])); for(const x of fresh)map.set(x.t,x); bars=[...map.values()].sort((a,z)=>a.t-z.t); updated++; if(!fresh.length)unchanged++;
+      const fresh=await fetchDaily(t,from,now); const map=new Map(bars.map(x=>[x.t,x])); for(const x of fresh)map.set(x.t,x); bars=[...map.values()].sort((a,z)=>a.t-z.t); updated++; if(!fresh.length)unchanged++;
     }else{
-      bars=await fetch4H(t,splitDate,now); updated++;
+      bars=await fetchDaily(t,splitDate,now); updated++;
     }
-    // The model's base must be the true lowest 4H low since the split anchor.
-    // Do not apply an arbitrary lookback cutoff that can silently remove the real low.
     bars=bars.filter(x=>x.date>=splitDate);
-    await saveHistory(t,{version:1,ticker:t,splitDate,initialized:true,bars,updatedAt:new Date().toISOString(),lastDate:bars.at(-1)?.date||null});
+    await saveHistory(t,{version:2,timeframe:'1D',ticker:t,splitDate,initialized:true,bars,updatedAt:new Date().toISOString(),lastDate:bars.at(-1)?.date||null});
     histories[t]={ticker:t,row,bars};
-  }catch(e){failed++;histories[t]={ticker:t,row,bars:[],error:String(e?.message||e)};}processed++;if(processed%10===0||processed===tickers.length)await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',date:now,total:tickers.length,processed,updated,unchanged,failed});}};
-  await Promise.all(Array.from({length:Math.min(CONCURRENCY,tickers.length)},worker)); return{ok:true,date:now,total:tickers.length,processed,updated,unchanged,failed,histories};
+  }catch(e){failed++;histories[t]={ticker:t,row,bars:[],error:String(e?.message||e)};}processed++;if(processed%10===0||processed===tickers.length)await store.setJSON(STATUS_KEY,{state:'collecting',mode:'data',timeframe:'1D',date:now,total:tickers.length,processed,updated,unchanged,failed});}};
+  await Promise.all(Array.from({length:Math.min(CONCURRENCY,tickers.length)},worker)); return{ok:true,date:now,timeframe:'1D',total:tickers.length,processed,updated,unchanged,failed,histories};
 }
-function nowMinusDays(days){return new Date(Date.now()-days*86400000).toISOString().slice(0,10);}
 export async function runErtikaz({force=false}={}){
   const today=todayET(),store=getDataStore();
   if(!force){const settings=await getSiteSettings();if(settings.auto_update_enabled===false||settings.ertikazAutoUpdateEnabled===false)return{ok:true,skipped:true,reason:'ertikaz-automatic-updates-disabled'};}
   if(!force){const existing=await store.get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);if(existing?.date===today)return{ok:true,skipped:true,date:today,total:Number(existing.universeTickers||0)};}
   const collected=await collectErtikazData({force}); if(!collected.ok)return collected;
-  const results=[];let done=0; await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',date:today,total:collected.total,processed:0});
+  const results=[];let done=0; await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',timeframe:'1D',date:today,total:collected.total,processed:0});
   for(const t of Object.keys(collected.histories||{})){
     const h=collected.histories[t];
     results.push(h.error?{version:1,ticker:t,model:'ارتكاز',qualified:false,statusLabel:'ارتكاز — بيانات غير مكتملة',passedCount:0,totalChecks:7,error:h.error,checks:[]} : evaluateErtikazRules(t,h.row,h.bars,today));
     done++;if(done%10===0||done===collected.total)await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',date:today,total:collected.total,processed:done,collection:{updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});
   }
-  const payload={version:1,ready:true,date:today,updatedAt:new Date().toISOString(),universeTickers:results.length,qualifiedCount:results.filter(x=>x.qualified).length,records:results.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'central-cache-daily-rsi-short-plus-massive-4h-sequence',components:['Daily RSI','Short Available','Calendar days since split','4H base hold 5 trading sessions','4H resistance +15% to +25%','4H support retest <=5% above base','4H liquidity sweep <=10% below base with recovery <=1 session; actual sweep depth is recorded; >10% invalidates the base']};
-  await store.setJSON(RESULT_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',mode:'analysis',date:today,completedAt:payload.updatedAt,total:results.length,processed:results.length,qualifiedCount:payload.qualifiedCount,collection:{updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});
+  const payload={version:1,ready:true,date:today,updatedAt:new Date().toISOString(),universeTickers:results.length,qualifiedCount:results.filter(x=>x.qualified).length,records:results.sort((a,b)=>a.ticker.localeCompare(b.ticker)),source:'central-cache-daily-rsi-short-plus-massive-daily-sequence',components:['Daily RSI','Short Available','Calendar days since split','Daily base hold 5 trading sessions','Daily resistance +15% to +25% at any later candle while the base is not broken','Daily support retest <=5% above base on the next or second candle after resistance','Daily liquidity sweep <=10% below base with recovery <=1 session; actual sweep depth is recorded; >10% invalidates the base']};
+  await store.setJSON(RESULT_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',mode:'analysis',timeframe:'1D',date:today,completedAt:payload.updatedAt,total:results.length,processed:results.length,qualifiedCount:payload.qualifiedCount,collection:{updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});
   return{ok:true,date:today,total:results.length,processed:results.length,qualified:payload.qualifiedCount,updatedAt:payload.updatedAt};
 }
 export async function readErtikaz(){return await getDataStore().get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);}

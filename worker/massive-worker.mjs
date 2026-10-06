@@ -1,7 +1,7 @@
 import { store } from './store.mjs';
 import { runHourlyBuild } from '../netlify/functions/scanner-hourly-core.mjs';
 import { runAlertSweep } from '../netlify/functions/alerts.mjs';
-import { marketSession, isUsEquityMarketHoliday } from '../market-calendar.mjs';
+import { marketSession, isUsEquityMarketHoliday, etParts } from '../market-calendar.mjs';
 const BASE='https://api.massive.com';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const finite=v=>Number.isFinite(Number(v))?Number(v):null;
@@ -23,13 +23,11 @@ async function automaticUpdatesEnabled(){
 function timestampMs(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return null;if(n>1e17)return n/1e6;if(n>1e14)return n/1e3;if(n>1e11)return n;return n*1000;}
 function tradeSession(ts,now=new Date()){
   const ms=timestampMs(ts);if(!ms)return null;const d=new Date(ms);
+  if(Number.isNaN(d.getTime()))return null;
   const a=etParts(d),b=etParts(now);
   if(a.year!==b.year||a.month!==b.month||a.day!==b.day)return null;
-  const mins=Number(a.hour)*60+Number(a.minute);
-  if(mins>=240&&mins<570)return 'pre';
-  if(mins>=570&&mins<960)return 'regular';
-  if(mins>=960&&mins<1200)return 'after';
-  return null;
+  const session=marketSession(d);
+  return session==='closed'?null:session;
 }
 function choosePrice(x,session,now){
   const prevClose=finite(x?.prevDay?.c);
@@ -175,7 +173,9 @@ async function main(){
   for(const t of tickers){
     if(map[t])continue;
     const old=previousRecords[t];
-    const oldPrice=Number(old?.extendedPrice ?? old?.price ?? old?.currentPrice ?? old?.current);
+    // Carry forward only the authoritative extendedPrice. Never resurrect a
+    // daily/regular close or another alias as a live quote.
+    const oldPrice=Number(old?.extendedPrice);
     if(Number.isFinite(oldPrice)&&oldPrice>0){
       map[t]={ticker:t,...old,extendedPrice:oldPrice,price:oldPrice,current:oldPrice,currentPrice:oldPrice,quoteState:'carried-forward',staleSince:old?.staleSince||now.toISOString()};
     }

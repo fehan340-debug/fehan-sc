@@ -17,6 +17,9 @@ function observedWeekday(d){
   return x;
 }
 function key(d){return d.toISOString().slice(0,10);}
+export function etParts(date=new Date()){
+  return Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date).map(x=>[x.type,x.value]));
+}
 export function usEquityMarketHolidays(year){
   const holidays=[];
   holidays.push(utcDate(year,1,1)); // New Year's Day
