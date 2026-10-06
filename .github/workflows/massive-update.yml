@@ -41,9 +41,6 @@ jobs:
         with:
           node-version: 24
 
-      - name: Verify Node runtime
-        run: node --version
-
       - name: Validate required secrets
         run: |
           test -n "$MASSIVE_API_KEY" || (echo "Missing MASSIVE_API_KEY" && exit 1)

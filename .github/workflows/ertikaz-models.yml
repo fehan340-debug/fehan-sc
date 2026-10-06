@@ -52,7 +52,7 @@ jobs:
           test -n "$SUPABASE_KEY" || (echo "Missing SUPABASE_KEY" && exit 1)
           echo "Ertikaz collection secrets are present."
 
-      - name: Collect 4H data and analyze Ertikaz
+      - name: Collect daily data and analyze Ertikaz
         env:
           ERTIKAZ_FORCE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: |
