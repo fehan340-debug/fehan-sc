@@ -55,3 +55,17 @@ jobs:
           FORCE_SHORT_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
           FORCE_SHORT_PUBLISH: ${{ startsWith(github.event.inputs.source, 'manual-') && 'true' || 'false' }}
         run: node worker/short-worker.mjs
+
+      - name: Refresh Ertikaz short condition
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_TABLE: scanner_worker_store
+          SUPABASE_SITE_SETTINGS_TABLE: app_site_settings_store
+        run: |
+          node --input-type=module <<'NODE'
+          import { refreshErtikazShortFromCache } from './netlify/functions/ertikaz-core.mjs';
+          const r = await refreshErtikazShortFromCache();
+          console.log(JSON.stringify(r, null, 2));
+          if (!r?.ok) process.exit(1);
+          NODE

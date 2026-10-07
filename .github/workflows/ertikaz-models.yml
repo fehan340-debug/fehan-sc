@@ -1,10 +1,13 @@
 name: Ertikaz Model
 
 on:
-  # After the US after-hours session on weekdays. The core also prevents
-  # duplicate daily work, so manual dispatch remains safe for testing.
+  # Two UTC wake-up times cover both US daylight-saving offsets. The core
+  # itself checks America/New_York and will run only after the regular session
+  # has closed, so the daily candle is complete and the first valid run is at
+  # the beginning of After Hours.
   schedule:
-    - cron: '30 1 * * 2-6'
+    - cron: '15 20 * * 1-5'
+    - cron: '15 21 * * 1-5'
   workflow_dispatch:
     inputs:
       source:
