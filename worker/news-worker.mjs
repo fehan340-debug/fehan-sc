@@ -214,6 +214,34 @@ function normalizeInvestingNewsPath(path){
   if(!/-news(?:\/\d+)?$/i.test(p))p+='-news';
   return `https://sa.investing.com${p}?tab=company`;
 }
+function extractArticles(html,{ticker,row,companyPage=false}={}){
+  const out=new Map();
+  const source=String(html||'');
+  const re=/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  let sourceOrder=0;
+  for(const m of source.matchAll(re)){
+    const href=decodeHtmlUrl(m[2]);
+    const pathUrl=investingPath(href);
+    if(!pathUrl||!/\/news\//i.test(pathUrl.pathname))continue;
+    const url=pathUrl.toString();
+    const title=stripHtml(m[3]);
+    if(!title||title.length<8)continue;
+    if(/^(أخبار|تحليلات|المزيد|قراءة المزيد|إعلانات)$/i.test(title))continue;
+    const idx=m.index??0;
+    const around=stripHtml(source.slice(Math.max(0,idx-260),Math.min(source.length,idx+2600)));
+    const dt=parseDate(around);
+    const sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i);
+    const articleSource=sourceMatch?sourceMatch[1].trim():'Investing.com';
+    const summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
+    const article={url,title,summary,context:around.slice(0,1400),publishedDate:dt?dt.toISOString().slice(0,10):null,source:articleSource,sourceOrder:sourceOrder++};
+    // Strict acceptance: the ticker OR company name must actually occur in the
+    // visible article text. Being listed on a company-news page is not evidence.
+    if(!companyArticleMatches(article,ticker,row))continue;
+    const key=url.split('?')[0];
+    if(!out.has(key))out.set(key,article);
+  }
+  return [...out.values()];
+}
 function pageUrl(base,page){
   if(page<=1)return base;
   const u=new URL(base);
