@@ -211,6 +211,21 @@ export function detectErtikazSequence(bars,splitDate){
         if(i<=recoveryAnchorIndex)continue;
         const dayLows=dayBars.map(x=>Number(x.low)).filter(Number.isFinite);
         const dayCloses=dayBars.map(x=>Number(x.close)).filter(Number.isFinite);
+        const brokenLow=dayLows.length>0&&Math.min(...dayLows)<basePrice-1e-9;
+
+        // CRITICAL RESET: a lower Low during the mandatory two-session recovery
+        // window is not another valid liquidity sweep. It breaks the locked base
+        // before the setup has stabilized again, so the OLD sequence is invalid
+        // and this exact lower-low candle becomes the NEW base.
+        if(brokenLow){
+          const newBaseBar=dayBars.find(x=>Number(x.low)<basePrice-1e-9);
+          const newBaseIndex=newBaseBar?b.findIndex(x=>x.t===newBaseBar.t):-1;
+          if(newBaseIndex>=0){
+            baseIndex=newBaseIndex;
+            break;
+          }
+        }
+
         const stayedAbove=dayLows.length>0&&dayCloses.length>0&&
           Math.min(...dayLows)>basePrice+1e-9&&Math.min(...dayCloses)>basePrice+1e-9;
         if(stayedAbove){
@@ -218,8 +233,8 @@ export function detectErtikazSequence(bars,splitDate){
           if(recoveredSessions<MIN_RECOVERY_SESSIONS)continue;
           recoveryAnchorIndex=null;
         }else{
-          // Recovery was not stable for two complete sessions yet. Do not count
-          // this dip as another sweep; keep waiting for two consecutive sessions.
+          // Recovery was not stable for two complete sessions yet. The setup
+          // remains blocked from accepting another sweep.
           continue;
         }
       }

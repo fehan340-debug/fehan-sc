@@ -542,6 +542,91 @@ async function run(){
  }catch(e){if(e?.name!=="AbortError"&&!stopped)setStatus("خطأ: "+e.message,"err")} finally{running=false;scanAbortController=null;$("start").disabled=false;$("stop").disabled=true;$("stop").textContent="■ إيقاف";$("pause").disabled=true;$("resume").disabled=true;}
 }
 $("start").onclick=run;
+function normalizeCacheTickerQuery(value){
+  return String(value||'').toUpperCase().replace(/[\s\-]/g,'').trim();
+}
+function cacheTickerSearchMatches(query){
+  const q=normalizeCacheTickerQuery(query);
+  if(!q||!Array.isArray(scannerCache))return [];
+  return scannerCache.filter(row=>normalizeCacheTickerQuery(row?.ticker)===q);
+}
+function renderCacheTickerSearchResult(rows,query){
+  const out=$("cacheTickerSearchResult"),status=$("cacheTickerSearchStatus");
+  if(!out||!status)return;
+  out.innerHTML='';
+  if(!query){status.textContent='';return;}
+  if(!rows.length){
+    status.textContent='لم يتم العثور على هذا السهم داخل الكاش.';
+    status.className='small';
+    return;
+  }
+  status.textContent=`تم العثور على ${rows.length} نتيجة داخل الكاش.`;
+  const wrap=document.createElement('div');
+  wrap.className='table-wrap';
+  const table=document.createElement('table');
+  table.innerHTML='<thead><tr><th>السهم</th><th>السعر الحالي</th><th>تاريخ التقسيم</th><th>RSI</th><th>الإجراء</th></tr></thead>';
+  const body=document.createElement('tbody');
+  rows.forEach(row=>{
+    const tr=document.createElement('tr');
+    const price=displayPrice(row);
+    const ticker=String(row?.ticker||'').toUpperCase();
+    const splitDate=row?.splitDate||'';
+    const on=isFavorite(ticker,splitDate);
+    tr.innerHTML=`<td><b>${escapeHtml(ticker)}</b></td><td>${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td>${escapeHtml(splitDate||'—')}</td><td>${fmt(row?.rsi)}</td><td><button type="button" class="btn ${on?'secondary':'start'} cacheTickerAddBtn">${on?'★ موجود في المفضلة':'⭐ إضافة إلى المفضلة'}</button></td>`;
+    const btn=tr.querySelector('.cacheTickerAddBtn');
+    btn.onclick=async()=>{
+      if(isFavorite(ticker,splitDate)){
+        status.textContent=`${ticker} موجود بالفعل في المفضلة.`;
+        return;
+      }
+      btn.disabled=true;
+      try{
+        await toggleFavorite({
+          ticker,
+          splitDate,
+          splitOpen:row?.splitOpen,
+          extendedPrice:row?.extendedPrice,
+          current:row?.current,
+          currentPrice:row?.currentPrice
+        });
+        btn.textContent='★ تمت الإضافة';
+        btn.classList.remove('start');btn.classList.add('secondary');
+        status.textContent=`تمت إضافة ${ticker} إلى المفضلة.`;
+      }catch(e){
+        btn.disabled=false;
+        status.textContent=e?.message||'تعذر إضافة السهم إلى المفضلة.';
+      }
+    };
+    body.appendChild(tr);
+  });
+  table.appendChild(body);wrap.appendChild(table);out.appendChild(wrap);
+}
+async function searchTickerInCache(){
+  const input=$("cacheTickerSearch"),btn=$("cacheTickerSearchBtn"),status=$("cacheTickerSearchStatus");
+  if(!input||!btn||!status)return;
+  const query=normalizeCacheTickerQuery(input.value);
+  input.value=input.value.trim();
+  if(!query){
+    renderCacheTickerSearchResult([],'');
+    status.textContent='اكتب رمز السهم للبحث داخل الكاش.';
+    return;
+  }
+  btn.disabled=true;
+  try{
+    // Only read the already-published scanner cache; never query an external ticker API.
+    if(!Array.isArray(scannerCache)||!scannerCacheUpdatedAt){
+      status.textContent='جاري تحميل كاش الباحث…';
+      await loadScannerCache({wait:true,maxAttempts:30});
+    }
+    const rows=cacheTickerSearchMatches(query);
+    renderCacheTickerSearchResult(rows,query);
+  }catch(e){
+    status.textContent=e?.message||'تعذر قراءة كاش الباحث.';
+  }finally{btn.disabled=false;}
+}
+$("cacheTickerSearchBtn")?.addEventListener('click',searchTickerInCache);
+$("cacheTickerSearch")?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();searchTickerInCache();}});
+
 $("pause").onclick=()=>{if(!running||stopped)return;paused=true;$("pause").disabled=true;$("resume").disabled=false;setStatus(`⏸ البحث متوقف مؤقتًا — النتائج الحالية: <b>${results}</b>.`);};
 $("resume").onclick=()=>{if(!running||stopped)return;paused=false;$("pause").disabled=false;$("resume").disabled=true;setStatus(`▶ تم استئناف البحث — النتائج الحالية: <b>${results}</b>.`);};
 $("stop").onclick=()=>{if(!running)return;stopped=true;paused=false;if(scanAbortController)scanAbortController.abort();$("stop").disabled=true;$("pause").disabled=true;$("resume").disabled=true;$("stop").textContent="⏹ جارٍ الإيقاف...";setStatus(`جارٍ إيقاف البحث... النتائج الحالية: <b>${results}</b>.`);};

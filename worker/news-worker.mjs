@@ -7,8 +7,8 @@ const CACHE_KEY = 'scanner-cache-v1';
 const POINTER_KEY = 'scanner-cache-pointer-v2';
 const SCRAPE_URL = 'https://api.scrapingant.com/v2/general';
 const INVESTING_SEARCH = 'https://sa.investing.com/search/?q=';
-const INITIAL_MAX_PAGES = 4;
-const INCREMENTAL_MAX_PAGES = 2;
+const INITIAL_MAX_PAGES = 12;
+const INCREMENTAL_MAX_PAGES = 4;
 
 const env = name => String(process.env[name] || '').trim();
 const cleanTicker = v => String(v || '').trim().toUpperCase().replace(/[^A-Z0-9._-]/g, '');
@@ -48,16 +48,63 @@ function classifyImpact(text){
   const pc=p.filter(r=>r.test(s)).length,nc=n.filter(r=>r.test(s)).length;
   return pc>nc&&pc>0?'إيجابي':nc>pc&&nc>0?'سلبي':'محايد';
 }
-async function scrape(url,{browser=false}={}){
+async function scrape(url,{browser=false,proxyType='datacenter',proxyCountry=''}={}){
   const key=env('SCRAPINGANT_API_KEY'); if(!key)throw new Error('Missing SCRAPINGANT_API_KEY');
-  const qs=new URLSearchParams({url,browser:String(browser)});
-  for(let attempt=0;attempt<4;attempt++){
-    const r=await fetch(`${SCRAPE_URL}?${qs}`,{headers:{'x-api-key':key,accept:'application/json'}});const text=await r.text();
-    if(r.ok){try{const j=JSON.parse(text);return String(j.content||j.html||'');}catch{return text;}}
-    if([403,409,429,500,502,503,504].includes(r.status)&&attempt<3){await sleep(1200*(attempt+1));continue;}
-    throw new Error(`ScrapingAnt HTTP ${r.status}: ${text.slice(0,220)}`);
+
+  // ScrapingAnt documents HTTP 423 as anti-bot detection and recommends
+  // changing browser/proxy settings. The old implementation retried the exact
+  // same request, so a detected request could become a permanent zero-news
+  // ticker. Rotate through a small, bounded set of request profiles instead.
+  const profiles=[];
+  const addProfile=(b,p,c='')=>{
+    const key=`${b?'browser':'raw'}:${p}:${c||'auto'}`;
+    if(!profiles.some(x=>x.key===key))profiles.push({key,browser:b,proxyType:p,proxyCountry:c});
+  };
+  addProfile(Boolean(browser),proxyType,proxyCountry);
+  addProfile(true,'residential','US');
+  addProfile(true,'residential','SA');
+  addProfile(false,'residential','US');
+  addProfile(true,'datacenter','US');
+
+  const errors=[];
+  for(const profile of profiles){
+    for(let attempt=0;attempt<2;attempt++){
+      const params={url,browser:String(profile.browser),proxy_type:profile.proxyType};
+      if(profile.proxyCountry)params.proxy_country=profile.proxyCountry;
+      const qs=new URLSearchParams(params);
+      const r=await fetch(`${SCRAPE_URL}?${qs}`,{headers:{'x-api-key':key,accept:'application/json'}});
+      const text=await r.text();
+      if(r.ok){
+        try{
+          const j=JSON.parse(text);
+          const content=String(j.content||j.html||'');
+          if(content)return content;
+        }catch{
+          if(text)return text;
+        }
+        errors.push(`${profile.key}:empty`);
+        break;
+      }
+
+      const detail=text.slice(0,220);
+      errors.push(`${profile.key}:${r.status}:${detail}`);
+
+      // 423 is specifically anti-bot detection. Do NOT repeat the same profile
+      // four times; move to the next browser/proxy combination.
+      if(r.status===423)break;
+
+      // Transient/rate-limit/server errors can succeed on the same profile.
+      if([409,429,500,502,503,504].includes(r.status)&&attempt<1){
+        await sleep(900*(attempt+1));
+        continue;
+      }
+
+      // Authentication/request errors are not fixed by another retry.
+      break;
+    }
   }
-  throw new Error('ScrapingAnt failed');
+  const last=errors.at(-1)||'unknown';
+  throw new Error(`ScrapingAnt failed after adaptive retries: ${last}`);
 }
 function companyTokens(row={}){
   const raw=String(row?.name||row?.companyName||row?.company_name||'').trim();
@@ -117,7 +164,7 @@ async function findInvestingNewsUrl(ticker,row={}){
   u.searchParams.set('tab','company');
   return u.toString();
 }
-function extractArticles(html,{ticker,row}={}){
+function extractArticles(html,{ticker,row,companyPage=false}={}){
   const out=new Map();
   const source=String(html||'');
   const re=/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
@@ -132,7 +179,12 @@ function extractArticles(html,{ticker,row}={}){
     const dt=parseDate(around),sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),articleSource=sourceMatch?sourceMatch[1].trim():'Investing.com';
     const summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
     const article={url,title,summary,context:around.slice(0,1400),publishedDate:dt?dt.toISOString().slice(0,10):null,source:articleSource,sourceOrder:sourceOrder++};
-    if(!companyArticleMatches(article,ticker,row))continue;
+    // The URL was obtained from the verified company-news page. Keep that page
+    // context as the primary company association, while still rejecting known
+    // broad-market article paths. This prevents legitimate company articles from
+    // disappearing merely because the title/snippet omits the ticker/name.
+    const matches=companyArticleMatches(article,ticker,row);
+    if(!matches && !(companyPage&&!isBroadMarketArticle(article)))continue;
     const key=url.split('?')[0];
     if(!out.has(key))out.set(key,article);
   }
@@ -193,8 +245,8 @@ async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
     let articles=[];
     try{
       let html=await scrape(pageUrl(newsUrl,page));
-      articles=extractArticles(html,{ticker,row});
-      if(!articles.length){html=await scrape(pageUrl(newsUrl,page),{browser:true});articles=extractArticles(html,{ticker,row});}
+      articles=extractArticles(html,{ticker,row,companyPage:true});
+      if(!articles.length){html=await scrape(pageUrl(newsUrl,page),{browser:true,proxyType:'residential',proxyCountry:'US'});articles=extractArticles(html,{ticker,row,companyPage:true});}
     }catch(e){pageError=String(e?.message||e);break;}
     if(!articles.length)break;
     pages++;
