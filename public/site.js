@@ -235,26 +235,53 @@ setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
 let ertikazCacheMap=new Map(),ertikazCacheUpdatedAt=null,ertikazLoadPromise=null,cacheTickerSearchCurrentQuery='';
+function restoreErtikazLocalCache(){
+  try{
+    const raw=localStorage.getItem('scanner_ertikaz_public_cache_v1');
+    if(!raw)return false;
+    const d=JSON.parse(raw);
+    const rows=Array.isArray(d?.records)?d.records:[];
+    if(!rows.length)return false;
+    ertikazCacheMap=new Map(rows.map(x=>[String(x?.ticker||'').toUpperCase(),x]).filter(([k])=>k));
+    ertikazCacheUpdatedAt=d?.updatedAt||null;
+    refreshVisibleErtikazLabels();
+    return true;
+  }catch{return false;}
+}
+restoreErtikazLocalCache();
 async function loadPublicErtikaz(){
   if(ertikazLoadPromise)return ertikazLoadPromise;
   ertikazLoadPromise=(async()=>{
-    try{
-      const r=await apiFetch('/.netlify/functions/ertikaz?action=read');
-      const d=await responseJSON(r);
-      if(!r.ok||!d?.ok)throw Error(d?.error||'تعذر تحميل كاش ارتكاز.');
-      const rows=Array.isArray(d?.data?.records)?d.data.records:[];
-      ertikazCacheMap=new Map(rows.map(x=>[String(x?.ticker||'').toUpperCase(),x]).filter(([k])=>k));
-      ertikazCacheUpdatedAt=d?.data?.updatedAt||null;
-      refreshVisibleErtikazLabels();
-      return d;
-    }catch(e){
-      // Ertikaz is an optional annotation in the scanner/favorites UI. A read
-      // failure must never block the normal search or favorites rendering.
-      console.warn('[ertikaz-cache] read failed',e?.message||e);
-      return null;
-    }finally{ertikazLoadPromise=null;}
+    let lastError=null;
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        const r=await apiFetch(`/.netlify/functions/ertikaz?action=read&_=${Date.now()}`);
+        const d=await responseJSON(r);
+        if(!r.ok||!d?.ok)throw Error(d?.error||`تعذر تحميل كاش ارتكاز (HTTP ${r.status}).`);
+        const rows=Array.isArray(d?.data?.records)?d.data.records:[];
+        // An empty response must not erase a previously valid public cache.
+        if(rows.length){
+          ertikazCacheMap=new Map(rows.map(x=>[String(x?.ticker||'').toUpperCase(),x]).filter(([k])=>k));
+          ertikazCacheUpdatedAt=d?.data?.updatedAt||null;
+          try{localStorage.setItem('scanner_ertikaz_public_cache_v1',JSON.stringify({records:rows,updatedAt:ertikazCacheUpdatedAt}));}catch{}
+          refreshVisibleErtikazLabels();
+        }else if(!ertikazCacheMap.size){
+          restoreErtikazLocalCache();
+        }
+        return d;
+      }catch(e){
+        lastError=e;
+        if(attempt<2)await sleep(500*(attempt+1));
+      }
+    }
+    // Ertikaz is an optional annotation in the scanner/favorites UI. A read
+    // failure must never block normal search/favorites rendering, and the last
+    // valid local cache remains visible until the server responds again.
+    console.warn('[ertikaz-cache] read failed',lastError?.message||lastError);
+    restoreErtikazLocalCache();
+    return null;
   })();
-  return ertikazLoadPromise;
+  return ertikazLoadPromise.finally(()=>{ertikazLoadPromise=null;});
 }
 function ertikazForTicker(ticker){return ertikazCacheMap.get(String(ticker||'').toUpperCase())||null;}
 function ertikazInlineHtml(ticker){

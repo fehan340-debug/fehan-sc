@@ -5,10 +5,14 @@ const NEWS_TICKER_PREFIX = 'scanner-news-ticker-v2:';
 const STATUS_KEY = 'scanner-news-status';
 const CACHE_KEY = 'scanner-cache-v1';
 const POINTER_KEY = 'scanner-cache-pointer-v2';
+const UNIVERSE_KEY = 'scanner-universe-v2';
 const SCRAPE_URL = 'https://api.scrapingant.com/v2/general';
 const INVESTING_SEARCH = 'https://sa.investing.com/search/?q=';
-const INITIAL_MAX_PAGES = 12;
-const INCREMENTAL_MAX_PAGES = 4;
+// Keep the per-run scrape budget deliberately small. Initial six-month history
+// is backfilled in chunks and resumes from nextInitialPage on the next run.
+// Daily updates only need the newest one or two pages.
+const INITIAL_MAX_PAGES = 8;
+const INCREMENTAL_MAX_PAGES = 2;
 
 const env = name => String(process.env[name] || '').trim();
 const cleanTicker = v => String(v || '').trim().toUpperCase().replace(/[^A-Z0-9._-]/g, '');
@@ -48,31 +52,39 @@ function classifyImpact(text){
   const pc=p.filter(r=>r.test(s)).length,nc=n.filter(r=>r.test(s)).length;
   return pc>nc&&pc>0?'إيجابي':nc>pc&&nc>0?'سلبي':'محايد';
 }
-async function scrape(url,{browser=false,proxyType='datacenter',proxyCountry=''}={}){
+async function scrape(url,{browser=false,proxyType='datacenter',proxyCountry='',allowResidential=true}={}){
   const key=env('SCRAPINGANT_API_KEY'); if(!key)throw new Error('Missing SCRAPINGANT_API_KEY');
 
-  // ScrapingAnt documents HTTP 423 as anti-bot detection and recommends
-  // changing browser/proxy settings. The old implementation retried the exact
-  // same request, so a detected request could become a permanent zero-news
-  // ticker. Rotate through a small, bounded set of request profiles instead.
+  // Cost-first anti-bot strategy:
+  // 1) cheap raw datacenter request;
+  // 2) browser + datacenter page-source request;
+  // 3) browser + datacenter JS only when the page is genuinely dynamic;
+  // 4) one residential fallback only after anti-bot detection.
+  // Never hammer the same profile repeatedly. This keeps credit usage close to
+  // the low-scrape behavior while still giving the target site several ways to
+  // return the page without repeatedly triggering its anti-bot system.
   const profiles=[];
-  const addProfile=(b,p,c='')=>{
-    const key=`${b?'browser':'raw'}:${p}:${c||'auto'}`;
-    if(!profiles.some(x=>x.key===key))profiles.push({key,browser:b,proxyType:p,proxyCountry:c});
+  const add=(b,p,c='',pageSource=false)=>{
+    const id=`${b?'browser':'raw'}:${p}:${c||'auto'}:${pageSource?'source':'js'}`;
+    if(!profiles.some(x=>x.id===id))profiles.push({id,browser:b,proxyType:p,proxyCountry:c,returnPageSource:pageSource});
   };
-  addProfile(Boolean(browser),proxyType,proxyCountry);
-  addProfile(true,'residential','US');
-  addProfile(true,'residential','SA');
-  addProfile(false,'residential','US');
-  addProfile(true,'datacenter','US');
+  add(Boolean(browser),proxyType,proxyCountry,false);
+  if(!browser){
+    add(true,'datacenter','',true);
+    add(true,'datacenter','',false);
+    if(allowResidential)add(false,'residential','US',false);
+  }else if(allowResidential && proxyType!=='residential'){
+    add(false,'residential','US',false);
+  }
 
   const errors=[];
   for(const profile of profiles){
     for(let attempt=0;attempt<2;attempt++){
-      const params={url,browser:String(profile.browser),proxy_type:profile.proxyType};
+      const params={url,browser:String(profile.browser),proxy_type:profile.proxyType,timeout:'45'};
+      if(profile.returnPageSource)params.return_page_source='true';
       if(profile.proxyCountry)params.proxy_country=profile.proxyCountry;
       const qs=new URLSearchParams(params);
-      const r=await fetch(`${SCRAPE_URL}?${qs}`,{headers:{'x-api-key':key,accept:'application/json'}});
+      const r=await fetch(`${SCRAPE_URL}?${qs}`,{headers:{'x-api-key':key,accept:'application/json'} });
       const text=await r.text();
       if(r.ok){
         try{
@@ -82,24 +94,13 @@ async function scrape(url,{browser=false,proxyType='datacenter',proxyCountry=''}
         }catch{
           if(text)return text;
         }
-        errors.push(`${profile.key}:empty`);
+        errors.push(`${profile.id}:empty`);
         break;
       }
-
       const detail=text.slice(0,220);
-      errors.push(`${profile.key}:${r.status}:${detail}`);
-
-      // 423 is specifically anti-bot detection. Do NOT repeat the same profile
-      // four times; move to the next browser/proxy combination.
-      if(r.status===423)break;
-
-      // Transient/rate-limit/server errors can succeed on the same profile.
-      if([409,429,500,502,503,504].includes(r.status)&&attempt<1){
-        await sleep(900*(attempt+1));
-        continue;
-      }
-
-      // Authentication/request errors are not fixed by another retry.
+      errors.push(`${profile.id}:${r.status}:${detail}`);
+      if(r.status===423)break; // anti-bot: change profile immediately
+      if([409,429,500,502,503,504].includes(r.status)&&attempt<1){await sleep(700*(attempt+1));continue;}
       break;
     }
   }
@@ -151,13 +152,34 @@ function companyArticleMatches(article,ticker,row={}){
   // Match only text that belongs to the visible news item. The URL/path is NOT
   // considered evidence because the user requires the ticker/company name to
   // actually appear in the news, not merely in the company-news page URL.
-  const hay=`${String(article?.title||'')} ${String(article?.summary||'')} ${String(article?.context||'')}`;
+  const hay=`${String(article?.title||'')} ${String(article?.summary||'')}`;
   if(t){
     const re=new RegExp(`(?:^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')}(?:$|[^a-z0-9])`,'i');
     if(re.test(hay))return true;
   }
   return companyNameMatch(hay,row);
 }
+async function readUniverse(){
+  return await store.get(UNIVERSE_KEY).catch(()=>null);
+}
+async function massiveReferenceName(ticker){
+  const key=env('MASSIVE_API_KEY');
+  if(!key)return '';
+  try{
+    const r=await fetch(`https://api.massive.com/v3/reference/tickers/${encodeURIComponent(ticker)}?apiKey=${encodeURIComponent(key)}`,{headers:{accept:'application/json'}});
+    if(!r.ok)return '';
+    const d=await r.json().catch(()=>({}));
+    return String(d?.results?.name||'').trim();
+  }catch{return '';}
+}
+function rowWithCompanyName(ticker,row={},universeRefs={}){
+  const t=cleanTicker(ticker),ref=universeRefs?.[t]||{};
+  return {
+    ...row,
+    name:String(row?.name||row?.companyName||row?.company_name||ref?.name||ref?.companyName||'').trim()
+  };
+}
+
 async function findInvestingNewsUrl(ticker,row={}){
   const searchUrl=INVESTING_SEARCH+encodeURIComponent(ticker);
   let html=await scrape(searchUrl);
@@ -195,7 +217,7 @@ async function findInvestingNewsUrl(ticker,row={}){
   u.searchParams.set('tab','company');
   return u.toString();
 }
-function extractArticles(html,{ticker,row,companyPage=false}={}){
+function extractRawArticles(html){
   const out=new Map();
   const source=String(html||'');
   const re=/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
@@ -210,14 +232,16 @@ function extractArticles(html,{ticker,row,companyPage=false}={}){
     const dt=parseDate(around),sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),articleSource=sourceMatch?sourceMatch[1].trim():'Investing.com';
     const summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
     const article={url,title,summary,context:around.slice(0,1400),publishedDate:dt?dt.toISOString().slice(0,10):null,source:articleSource,sourceOrder:sourceOrder++};
-    // Being listed on a company-news page is NOT enough. The ticker or the
-    // company name must actually appear in the visible news text. This prevents
-    // unrelated market stories from being assigned to the stock.
-    if(!companyArticleMatches(article,ticker,row))continue;
     const key=url.split('?')[0];
     if(!out.has(key))out.set(key,article);
   }
   return [...out.values()];
+}
+function filterCompanyArticles(articles,ticker,row={}){
+  return (articles||[]).filter(article=>!isBroadMarketArticle(article)&&companyArticleMatches(article,ticker,row));
+}
+function extractArticles(html,{ticker,row,companyPage=false}={}){
+  return filterCompanyArticles(extractRawArticles(html),ticker,row);
 }
 function pageUrl(base,page){
   if(page<=1)return base;
@@ -249,21 +273,26 @@ function buildTickerRecord(ticker,row,map,newsUrl,cutoff,extra={}){
   const datedNews=news.filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(String(x?.publishedAt||'')));
   const coverageStart=datedNews.length?datedNews.reduce((m,x)=>!m||x.publishedAt<m?x.publishedAt:m,''):null;
   const complete=Boolean(coverageStart&&new Date(coverageStart+'T12:00:00Z')<=cutoff);
-  return{ticker,name:row?.name||row?.companyName||'',newsUrl,news,coverageStart,coverageEnd:news[0]?.publishedAt||null,coverageComplete:complete,initialized:Boolean(newsUrl),...extra,updatedAt:new Date().toISOString()};
+  return{ticker,name:row?.name||row?.companyName||row?.company_name||'',newsUrl,news,coverageStart,coverageEnd:news[0]?.publishedAt||null,coverageComplete:complete,initialized:Boolean(newsUrl),...extra,updatedAt:new Date().toISOString()};
 }
 async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
   const old=normalizeSeed(seed),existingNews=Array.isArray(old?.news)?old.news:[];
-  const companyName=row?.name||row?.companyName||row?.company_name||'';
+  let workingRow={...row};
+  let companyName=String(workingRow?.name||workingRow?.companyName||workingRow?.company_name||old?.name||'').trim();
+  if(!companyName){
+    companyName=await massiveReferenceName(ticker);
+    if(companyName)workingRow.name=companyName;
+  }
   // Re-validate previously cached items as well. Older versions trusted the
   // company-news page context and could have stored unrelated market stories.
-  const oldCompanyNews=existingNews.filter(x=>companyArticleMatches({url:x?.url,title:x?.title,summary:x?.summary,context:x?.summary},ticker,row));
+  const oldCompanyNews=existingNews.filter(x=>companyArticleMatches({url:x?.url,title:x?.title,summary:x?.summary,context:x?.summary},ticker,workingRow));
   let newsUrl=old?.newsUrl||null;
   if(newsUrl){
     try{const u=new URL(newsUrl);u.searchParams.set('tab','company');newsUrl=u.toString();}catch{newsUrl=null;}
   }
-  if(!newsUrl)newsUrl=await findInvestingNewsUrl(ticker,row);
+  if(!newsUrl)newsUrl=await findInvestingNewsUrl(ticker,workingRow);
   if(!newsUrl){
-    const preserved=existingNews.length||old?.initialized?buildTickerRecord(ticker,row,new Map(oldCompanyNews.filter(x=>x?.url).map(x=>[x.url,x])),old?.newsUrl||null,cutoff,{coverageStart:old?.coverageStart||null,coverageEnd:old?.coverageEnd||null,coverageComplete:Boolean(old?.coverageComplete),nextInitialPage:Number(old?.nextInitialPage||1),error:'لم يتم العثور على صفحة أخبار Investing.com لهذا السهم.'}):{ticker,name:row?.name||row?.companyName||'',news:[],newsUrl:null,initialized:false,coverageStart:null,coverageEnd:null,coverageComplete:false,nextInitialPage:1,error:'لم يتم العثور على صفحة أخبار Investing.com لهذا السهم.',updatedAt:new Date().toISOString()};
+    const preserved=existingNews.length||old?.initialized?buildTickerRecord(ticker,workingRow,new Map(oldCompanyNews.filter(x=>x?.url).map(x=>[x.url,x])),old?.newsUrl||null,cutoff,{coverageStart:old?.coverageStart||null,coverageEnd:old?.coverageEnd||null,coverageComplete:Boolean(old?.coverageComplete),nextInitialPage:Number(old?.nextInitialPage||1),error:'لم يتم العثور على صفحة أخبار Investing.com لهذا السهم.'}):{ticker,name:workingRow?.name||workingRow?.companyName||workingRow?.company_name||'',news:[],newsUrl:null,initialized:false,coverageStart:null,coverageEnd:null,coverageComplete:false,nextInitialPage:1,error:'لم يتم العثور على صفحة أخبار Investing.com لهذا السهم.',updatedAt:new Date().toISOString()};
     return preserved;
   }
   const map=new Map(oldCompanyNews.filter(x=>x?.url).map(x=>[x.url,x]));
@@ -276,8 +305,16 @@ async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
     let articles=[];
     try{
       let html=await scrape(pageUrl(newsUrl,page));
-      articles=extractArticles(html,{ticker,row,companyPage:true});
-      if(!articles.length){html=await scrape(pageUrl(newsUrl,page),{browser:true,proxyType:'residential',proxyCountry:'US'});articles=extractArticles(html,{ticker,row,companyPage:true});}
+      let rawArticles=extractRawArticles(html);
+      // Only spend a browser request when the raw page contains no news cards at all.
+      // A page containing unrelated market cards is a valid scrape and must not
+      // trigger another expensive request merely because the strict company filter
+      // rejected those cards.
+      if(!rawArticles.length){
+        html=await scrape(pageUrl(newsUrl,page),{browser:true,proxyType:'datacenter',proxyCountry:''});
+        rawArticles=extractRawArticles(html);
+      }
+      articles=filterCompanyArticles(rawArticles,ticker,workingRow);
     }catch(e){pageError=String(e?.message||e);break;}
     // An empty page can simply mean that the visible cards on that page were
     // unrelated market stories and were rejected by the strict company filter.
@@ -301,11 +338,11 @@ async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
       if(pageOld>=Math.max(2,Math.floor(articles.length*0.4)))reachedCutoff=true;
     }else if(lastKnown&&pageExisting>=Math.max(2,Math.floor(articles.length*0.4)))reachedExisting=true;
     const interimComplete=Boolean([...map.values()].some(x=>{const d=String(x?.publishedAt||'');return /^\d{4}-\d{2}-\d{2}$/.test(d)&&new Date(d+'T12:00:00Z')<=cutoff;}));
-    const interim=buildTickerRecord(ticker,row,map,newsUrl,cutoff,{addedCount,pagesFetched:pages,initialized:true,nextInitialPage:isInitial&&!interimComplete?(page+1):1,oldestSeen,error:null});
+    const interim=buildTickerRecord(ticker,workingRow,map,newsUrl,cutoff,{addedCount,pagesFetched:pages,initialized:true,nextInitialPage:isInitial&&!interimComplete?(page+1):1,oldestSeen,error:null});
     if(typeof onPageSaved==='function')await onPageSaved(interim);
     if(reachedCutoff||reachedExisting)break;
   }
-  const final=buildTickerRecord(ticker,row,map,newsUrl,cutoff,{addedCount,pagesFetched:pages,initialized:true,nextInitialPage:isInitial&&!reachedCutoff&&!pageError?(startPage+pages):isInitial&&!reachedCutoff?startPage+pages:1,oldestSeen,error:pageError||null});
+  const final=buildTickerRecord(ticker,workingRow,map,newsUrl,cutoff,{addedCount,pagesFetched:pages,initialized:true,nextInitialPage:isInitial&&!reachedCutoff&&!pageError?(startPage+pages):isInitial&&!reachedCutoff?startPage+pages:1,oldestSeen,error:pageError||null});
   if(typeof onPageSaved==='function'&&pages===0)await onPageSaved(final);
   return final;
 }
@@ -324,7 +361,7 @@ async function saveNewsManifest(records,date,readAt=null){
 export async function runNews({force=false}={}){
   const today=todayET();
   if(!force&&!await readModelAutoEnabled())return{ok:true,skipped:true,reason:'news-automatic-updates-disabled',date:today};
-  const cache=await readCentralCache(),rows=Array.isArray(cache?.records)?cache.records:[],byTicker=new Map(rows.map(x=>[cleanTicker(x?.ticker),x])),tickers=[...byTicker.keys()].filter(Boolean);
+  const cache=await readCentralCache(),universe=await readUniverse(),universeRefs=universe?.references||{},rows=Array.isArray(cache?.records)?cache.records:[],byTicker=new Map(rows.map(x=>{const t=cleanTicker(x?.ticker);return[t,rowWithCompanyName(t,x,universeRefs)]})),tickers=[...byTicker.keys()].filter(Boolean);
   if(!tickers.length)return{ok:false,error:'لا توجد أسهم في الكاش المركزي.'};
   const previous=await store.get(NEWS_KEY).catch(()=>null)||{version:2,records:[]},oldRecords=Array.isArray(previous.records)?previous.records:[],oldMap=new Map(oldRecords.map(x=>[cleanTicker(x?.ticker),x]));
   const hasNewTicker=tickers.some(t=>!oldMap.has(t));
@@ -378,7 +415,7 @@ export async function runNews({force=false}={}){
         await store.setJSON(`${NEWS_TICKER_PREFIX}${ticker}`,kept);
         liveManifest.set(ticker,manifestEntry(kept));
       }else{
-        liveManifest.set(ticker,{ticker,name:row?.name||row?.companyName||'',newsUrl:null,newsCount:0,coverageStart:null,coverageEnd:null,coverageComplete:false,initialized:false,updatedAt:new Date().toISOString(),error:String(e?.message||e)});
+        liveManifest.set(ticker,{ticker,name:row?.name||row?.companyName||row?.company_name||'',newsUrl:null,newsCount:0,coverageStart:null,coverageEnd:null,coverageComplete:false,initialized:false,updatedAt:new Date().toISOString(),error:String(e?.message||e)});
       }
       await saveNewsManifest([...liveManifest.values()],today,readAt);
       incomplete++;

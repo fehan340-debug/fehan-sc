@@ -56,7 +56,7 @@ export async function refreshUniverse(){
     if(!tickers.length) throw new Error('Massive لم تُرجع أي Stock Split خلال آخر 100 يوم.');
 
     const refs={}; let idx=0; let good=0;
-    const worker=async()=>{while(true){const i=idx++;if(i>=tickers.length)return;const t=tickers[i];try{const d=await massive(`/v3/reference/tickers/${encodeURIComponent(t)}`);const x=d?.results||{};if(eligibleRef(x,t)){const primary=normalizeExchange(x?.primary_exchange||x?.exchange||x?.exchange_name);refs[t]={ticker:t,primary_exchange:primary,type:x.type||null,exchange_name:EXCHANGE_NAMES[primary]||primary,country:x.country||x.address?.country||x.country_code||x.address?.country_code||null};good++;}}catch(e){console.warn('universe reference failed',t,e?.message||e);}}};
+    const worker=async()=>{while(true){const i=idx++;if(i>=tickers.length)return;const t=tickers[i];try{const d=await massive(`/v3/reference/tickers/${encodeURIComponent(t)}`);const x=d?.results||{};if(eligibleRef(x,t)){const primary=normalizeExchange(x?.primary_exchange||x?.exchange||x?.exchange_name);refs[t]={ticker:t,name:x.name||null,companyName:x.name||null,primary_exchange:primary,type:x.type||null,exchange_name:EXCHANGE_NAMES[primary]||primary,country:x.country||x.address?.country||x.country_code||x.address?.country_code||null};good++;}}catch(e){console.warn('universe reference failed',t,e?.message||e);}}};
     await Promise.all(Array.from({length:Math.min(8,tickers.length)},worker));
     const events=splitEvents.filter(x=>refs[x.ticker]);
     const eligible=[...new Set(events.map(x=>x.ticker))].sort();
