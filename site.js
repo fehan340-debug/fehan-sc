@@ -55,7 +55,19 @@ async function responseJSON(r){
 let stopped=false,paused=false,running=false,results=0,scanned=0,scanAbortController=null;
 let favoriteItems=[],favoriteRefreshTimer=null,favoriteRefreshing=false;
 let alertSettings={}, alertTickerCurrent="", telegramState={linked:false,link:null};
-async function loadAlertSettings(){try{const d=await getJSON('/.netlify/functions/alerts?action=settings');alertSettings=d.settings||{};telegramState=d.telegram||{linked:false,link:null};renderTelegramLinkState();}catch(e){console.warn('alerts settings',e.message);}}
+async function loadAlertSettings(){
+  try {
+    const d = await getJSON('/.netlify/functions/alerts?action=settings');
+    alertSettings = (d && d.settings) ? d.settings : {};
+    telegramState = (d && d.telegram) ? d.telegram : { linked: false, link: null };
+  } catch(e) {
+    console.error("Alerts Load Error:", e);
+    alertSettings = alertSettings || {};
+    telegramState = telegramState || { linked: false, link: null };
+  } finally {
+    renderTelegramLinkState();
+  }
+}
 function renderTelegramLinkState(){const status=$('telegramAlertStatus'),btn=$('telegramAlertLink'),modalBtn=$('telegramAlertLinkModal');if(telegramState?.linked){if(status)status.textContent='تم ربط حسابك بتليجرام.';[btn,modalBtn].forEach(x=>{if(x)x.style.display='none';});}else{if(status)status.textContent='يرجى ربط حسابك بتليجرام لتلقي التنبيهات فوراً على جوالك';[btn,modalBtn].forEach(x=>{if(x){x.style.display=telegramState?.link?'inline-flex':'none';if(telegramState?.link)x.href=telegramState.link;}});}}
 function updateAlertDropInput(){const mode=$('alertDropMode')?.value||'percent',input=$('alertDropValue');if(!input)return;input.placeholder=mode==='price'?'مثال: 4.20':'مثال: 5';input.step=mode==='price'?'0.01':'1';const suffix=$('alertDropSuffix');if(suffix)suffix.textContent=mode==='price'?'$':'%';}
 function openAlertModal(f){
@@ -186,30 +198,8 @@ async function loadScannerCache(options={}){
     const r=await apiFetch('/.netlify/functions/scanner-cache');
     const d=await responseJSON(r);
     if(!r.ok)throw Error(d.error||'تعذر تحميل بيانات الباحث.');
-    if(d.ready){
-      const incoming=Array.isArray(d.records)?d.records:[];
-      if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){
-        const oldMap=new Map((Array.isArray(scannerCache)?scannerCache:[]).map(x=>[`${String(x?.ticker||'').toUpperCase()}|${x?.splitDate||''}`,x]));
-        scannerCache=incoming.map(x=>{
-          const old=oldMap.get(`${String(x?.ticker||'').toUpperCase()}|${x?.splitDate||''}`)||oldMap.get(`${String(x?.ticker||'').toUpperCase()}|`);
-          const merged={...old,...x};
-          // A newly published technical snapshot is allowed to omit a live
-          // quote. Preserve the last visible quote until scanner-current
-          // publishes the next fresh five-minute value.
-          for(const k of ['extendedPrice','current','currentPrice','preMarketPrice','afterHoursPrice','priceSession','priceSource','currentUpdatedAt','changePct']){
-            if(merged[k]==null && old?.[k]!=null)merged[k]=old[k];
-          }
-          merged.freeFloat=Number.isFinite(Number(merged?.freeFloat))?Number(merged.freeFloat):(Number.isFinite(Number(merged?.free_float))?Number(merged.free_float):null);
-          merged.free_float=merged.freeFloat;
-          return merged;
-        });
-        scannerIPOs=Array.isArray(d.ipos)?d.ipos:scannerIPOs;scannerIpoUpdatedAt=d.ipoUpdatedAt||scannerIpoUpdatedAt;scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();
-      }
-      return {...d,records:scannerCache||[]};
-    }
-    // Never blank a working client cache just because a background refresh is
-    // temporarily building. Keep the last published data on screen.
-    if(!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=[];scannerCacheUpdatedAt=null;}
+    if(d.ready){const incoming=Array.isArray(d.records)?d.records:[];if(incoming.length||!Array.isArray(scannerCache)||!scannerCache.length){scannerCache=incoming.map(x=>({...x,freeFloat:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null),free_float:Number.isFinite(Number(x?.freeFloat))?Number(x.freeFloat):(Number.isFinite(Number(x?.free_float))?Number(x.free_float):null)}));scannerIPOs=Array.isArray(d.ipos)?d.ipos:[];scannerIpoUpdatedAt=d.ipoUpdatedAt||scannerIpoUpdatedAt;scannerCacheUpdatedAt=d.updatedAt||scannerCacheUpdatedAt;scannerTechnicalUpdatedAt=d.technicalUpdatedAt||d.fullRefreshAt||d.updatedAt||scannerTechnicalUpdatedAt;scannerShortUpdatedAt=d.shortUpdatedAt||d.borrowUpdatedAt||scannerShortUpdatedAt;updateDataFreshness();}return {...d,records:scannerCache||[]};}
+    scannerCache=[];scannerCacheUpdatedAt=null;
     if(!triggered){
       triggered=true;
       // The cache endpoint starts the protected background build server-side.
@@ -234,90 +224,11 @@ function updateDataFreshness(){const el=$("dataFreshness");if(el)el.textContent=
 setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
-let ertikazCacheMap=new Map(),ertikazCacheUpdatedAt=null,ertikazLoadPromise=null,cacheTickerSearchCurrentQuery='';
-function restoreErtikazLocalCache(){
-  try{
-    const raw=localStorage.getItem('scanner_ertikaz_public_cache_v1');
-    if(!raw)return false;
-    const d=JSON.parse(raw);
-    const rows=Array.isArray(d?.records)?d.records:[];
-    if(!rows.length)return false;
-    ertikazCacheMap=new Map(rows.map(x=>[String(x?.ticker||'').toUpperCase(),x]).filter(([k])=>k));
-    ertikazCacheUpdatedAt=d?.updatedAt||null;
-    refreshVisibleErtikazLabels();
-    return true;
-  }catch{return false;}
-}
-restoreErtikazLocalCache();
-async function loadPublicErtikaz(){
-  if(ertikazLoadPromise)return ertikazLoadPromise;
-  ertikazLoadPromise=(async()=>{
-    let lastError=null;
-    for(let attempt=0;attempt<3;attempt++){
-      try{
-        const r=await apiFetch(`/.netlify/functions/ertikaz?action=read&_=${Date.now()}`);
-        const d=await responseJSON(r);
-        if(!r.ok||!d?.ok)throw Error(d?.error||`تعذر تحميل كاش ارتكاز (HTTP ${r.status}).`);
-        const rows=Array.isArray(d?.data?.records)?d.data.records:[];
-        // An empty response must not erase a previously valid public cache.
-        if(rows.length){
-          ertikazCacheMap=new Map(rows.map(x=>[String(x?.ticker||'').toUpperCase(),x]).filter(([k])=>k));
-          ertikazCacheUpdatedAt=d?.data?.updatedAt||null;
-          try{localStorage.setItem('scanner_ertikaz_public_cache_v1',JSON.stringify({records:rows,updatedAt:ertikazCacheUpdatedAt}));}catch{}
-          refreshVisibleErtikazLabels();
-        }else if(!ertikazCacheMap.size){
-          restoreErtikazLocalCache();
-        }
-        return d;
-      }catch(e){
-        lastError=e;
-        if(attempt<2)await sleep(500*(attempt+1));
-      }
-    }
-    // Ertikaz is an optional annotation in the scanner/favorites UI. A read
-    // failure must never block normal search/favorites rendering, and the last
-    // valid local cache remains visible until the server responds again.
-    console.warn('[ertikaz-cache] read failed',lastError?.message||lastError);
-    restoreErtikazLocalCache();
-    return null;
-  })();
-  return ertikazLoadPromise.finally(()=>{ertikazLoadPromise=null;});
-}
-function ertikazForTicker(ticker){return ertikazCacheMap.get(String(ticker||'').toUpperCase())||null;}
-function ertikazInlineHtml(ticker){
-  const row=ertikazForTicker(ticker);
-  if(!row)return '';
-  return ` <button type="button" class="ertikazInlineLink" data-ertikaz-inline-ticker="${escapeHtml(String(ticker||'').toUpperCase())}">ارتكاز</button>`;
-}
-function bindErtikazInlineButtons(root=document){
-  root.querySelectorAll?.('[data-ertikaz-inline-ticker]').forEach(btn=>{
-    if(btn.dataset.bound==='1')return;
-    btn.dataset.bound='1';
-    btn.addEventListener('click',e=>{
-      e.preventDefault();e.stopPropagation();
-      const row=ertikazForTicker(btn.dataset.ertikazInlineTicker);
-      if(row)openErtikazModal(row);
-    });
-  });
-}
-function refreshVisibleErtikazLabels(){
-  document.querySelectorAll('#results tr[data-ticker]').forEach(tr=>{
-    const cell=tr.cells?.[0];if(!cell)return;
-    const ticker=tr.dataset.ticker||'';
-    const old=cell.querySelector('.ertikazInlineLink');
-    const should=Boolean(ertikazForTicker(ticker));
-    if(should&&!old){cell.insertAdjacentHTML('beforeend',ertikazInlineHtml(ticker));bindErtikazInlineButtons(cell);}
-    else if(!should&&old)old.remove();
-  });
-  if($('sec-favorites')?.classList.contains('active'))renderFavorites();
-  if(cacheTickerSearchCurrentQuery)renderCacheTickerSearchResult(cacheTickerSearchMatches(cacheTickerSearchCurrentQuery),cacheTickerSearchCurrentQuery);
-}
-setInterval(()=>{if(sessionReady&&document.visibilityState==='visible')loadPublicErtikaz().catch(()=>{});},10*60*1000);
 let cacheRefreshBusy=false;
 async function refreshScannerCacheInBackground(){
   if(cacheRefreshBusy||document.hidden)return;
   cacheRefreshBusy=true;
-  try{await loadScannerCache({force:true,maxAttempts:2});if($('sec-favorites')?.classList.contains('active'))refreshFavoriteCellsInPlace();}catch{}finally{cacheRefreshBusy=false;}
+  try{await loadScannerCache({force:true,maxAttempts:2});renderFavorites();}catch{}finally{cacheRefreshBusy=false;}
 }
 setInterval(refreshScannerCacheInBackground,120000);
 
@@ -332,18 +243,14 @@ function browserMarketSession(){
   return 'closed';
 }
 function chooseBrowserLivePrice(x,session){
-  const extended=Number(x?.extendedPrice),direct=Number(x?.price),pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c),prev=Number(x?.prevDay?.c),min=Number(x?.min?.c);
+  const pre=Number(x?.preMarket?.p),after=Number(x?.afterHours?.p),last=Number(x?.lastTrade?.p),day=Number(x?.day?.c),prev=Number(x?.prevDay?.c),min=Number(x?.min?.c);
   const valid=v=>Number.isFinite(v)&&v>0?v:null;
-  const extendedValid=valid(extended),directValid=valid(direct),lastValid=valid(last),preValid=valid(pre),afterValid=valid(after),dayValid=valid(day),prevValid=valid(prev),minValid=valid(min);
+  const lastValid=valid(last),preValid=valid(pre),afterValid=valid(after),dayValid=valid(day),prevValid=valid(prev),minValid=valid(min);
   const sessionOfTs=ts=>{const n=Number(ts);if(!Number.isFinite(n)||n<=0)return null;const d=new Date(n>1e14?n/1e3:n>1e11?n:n*1000);const q=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);const h=Number(q.find(x=>x.type==='hour')?.value||0),m=Number(q.find(x=>x.type==='minute')?.value||0),mins=h*60+m;if(mins>=240&&mins<570)return 'pre';if(mins>=570&&mins<960)return 'regular';if(mins>=960&&mins<1200)return 'after';return null;};
   const lastSession=sessionOfTs(x?.lastTrade?.t),minSession=sessionOfTs(x?.min?.t);
-  if(session==='pre') return extendedValid || (lastSession==='pre'&&lastValid) || (minSession==='pre'&&minValid) || preValid || null;
-  if(session==='regular') return extendedValid || (lastSession==='regular'&&lastValid) || (minSession==='regular'&&minValid) || directValid || null;
-  if(session==='after') return extendedValid || (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
-  // CLOSED: keep the last completed after-hours price visible. Do not fall
-  // back to regular/day/previous close. The stored after-hours price remains
-  // frozen until the next pre-market session supplies a new quote.
-  if(session==='closed') return (String(x?.priceSession||'')==='after'&&extendedValid) || (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
+  if(session==='pre') return (lastSession==='pre'&&lastValid) || (minSession==='pre'&&minValid) || preValid || null;
+  if(session==='regular') return (lastSession==='regular'&&lastValid) || dayValid || prevValid || null;
+  if(session==='after') return (lastSession==='after'&&lastValid) || (minSession==='after'&&minValid) || afterValid || null;
   return null;
 }
 async function getMarketSnapshot(signal){
@@ -454,33 +361,34 @@ function toggleFavorite(item){
 }
 function updateFavoriteButtons(){document.querySelectorAll('.favToggle').forEach(b=>{const on=isFavorite(b.dataset.ticker,b.dataset.split);b.textContent=on?'★':'☆';b.classList.toggle('on',on);b.title=on?'إزالة من المفضلة':'إضافة إلى المفضلة';});}
 function displayPrice(stock){
-  const candidates=[stock?.extendedPrice];
-  for(const value of candidates){const n=Number(value);if(Number.isFinite(n)&&n>0)return n;}
-  return '-';
+  const extended=Number(stock?.extendedPrice);
+  return Number.isFinite(extended)&&extended>0?extended:'-';
+}
+function scannerSearchPrice(stock){
+  const session=browserMarketSession();
+  const live=Number(stock?.extendedPrice);
+  if(session!=='closed') return Number.isFinite(live)&&live>0?live:null;
+  // When the U.S. market is fully closed there is no live/extended price.
+  // The scanner can still evaluate yesterday's completed regular-session close
+  // without turning that value into the app's live-price/alert price.
+  const close=Number(stock?.regularPrice ?? stock?.closePrice ?? stock?.prevClose);
+  return Number.isFinite(close)&&close>0?close:null;
 }
 function normalizeLivePrice(live){
   const extended=Number(live?.extendedPrice);
   if(Number.isFinite(extended)&&extended>0)return extended;
-  return null;
+  const sameSnapshot=Number(live?.price ?? live?.current ?? live?.currentPrice);
+  return Number.isFinite(sameSnapshot)&&sameSnapshot>0?sameSnapshot:null;
 }
 
-let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null,currentPricesAppliedAt=null;
+let currentPricesUpdatedAt=null,currentPriceSession="closed",currentPriceTimer=null;
 async function loadCurrentPrices(){
   try{
     const r=await apiFetch('/.netlify/functions/scanner-current');
     const d=await responseJSON(r);
     if(!r.ok||!d.ok)return false;
-    const incomingUpdatedAt=d.updatedAt||null;
-    currentPricesUpdatedAt=incomingUpdatedAt||currentPricesUpdatedAt; currentPriceSession=d.session||currentPriceSession||'closed';
-    // During closed/weekend/holiday periods the browser only reads the frozen
-    // last After-Hours snapshot. It never requests or substitutes a regular close.
+    currentPricesUpdatedAt=d.updatedAt||null; currentPriceSession=d.session||'closed';
     const map=d.records||{};
-    // Do not rewrite the DOM every polling tick. The visible price remains
-    // stable until the server publishes a new five-minute snapshot.
-    if(incomingUpdatedAt && incomingUpdatedAt===currentPricesAppliedAt && Object.keys(map||{}).length){
-      updateVisibleCurrentPrices();
-      return true;
-    }
     if(Array.isArray(scannerCache)){
       for(const row of scannerCache){
         const live=map[String(row?.ticker||'').toUpperCase()];
@@ -490,18 +398,13 @@ async function loadCurrentPrices(){
           row.extendedPrice=p;
           row.current=p;
           row.currentPrice=p;
-          row.currentQuoteState=live.quoteState||'fresh';
-          row.currentUpdatedAt=incomingUpdatedAt||row.currentUpdatedAt||null;
         }
-        if(Number.isFinite(Number(live?.preMarket)))row.preMarketPrice=Number(live.preMarket);
-        if(Number.isFinite(Number(live?.afterHours)))row.afterHoursPrice=Number(live.afterHours);
+        row.preMarketPrice=Number.isFinite(Number(live?.preMarket))?Number(live.preMarket):row.preMarketPrice??null;
+        row.afterHoursPrice=Number.isFinite(Number(live?.afterHours))?Number(live.afterHours):row.afterHoursPrice??null;
         row.priceSession=d.session||row.priceSession;
+        row.currentUpdatedAt=d.updatedAt||row.currentUpdatedAt||null;
       }
-      currentPricesAppliedAt=incomingUpdatedAt||currentPricesAppliedAt;
       updateVisibleCurrentPrices();
-      // Favorites are updated in place; never rebuild their rows during a
-      // polling cycle, which used to cause the visible dash/flicker.
-      if($('sec-favorites')?.classList.contains('active'))refreshFavoriteCellsInPlace();
     }
     return true;
   }catch(e){console.warn('[current-price] refresh failed',e?.message||e);return false;}
@@ -532,8 +435,9 @@ function formatCompactShares(value){
 }
 function addRow(r){
   const tr=document.createElement('tr');tr.dataset.ticker=r.ticker;tr.dataset.split=r.splitDate||'';
-  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b>${ertikazInlineHtml(r.ticker)}</td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
-  tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});bindErtikazInlineButtons(tr);$('results').prepend(tr);results++;$('count').textContent=results;return tr;
+  const rowPrice=Number(r.searchPrice);
+  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(rowPrice)&&rowPrice>0?'$'+fmt(rowPrice):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
+  tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
 }
 
 async function getBars4H(t,from,to,key,signal){const path=`/v2/aggs/ticker/${encodeURIComponent(t)}/range/4/hour/${from}/${to}?adjusted=true&sort=asc&limit=50000`;const rows=(await getJSON(massive(path),3,signal)).results||[];return rows.filter(b=>Number(b?.l)>0&&Number(b?.h)>0&&Number(b?.c)>0);}
@@ -596,27 +500,20 @@ async function run(){
    const days=clampScannerDays(),drop=Number($("drop").value)||0,rsiMax=Number($("rsiMax").value)||30,maxPrice=Number($("maxPrice").value)||10; const shortRaw=$("shortMax").value.trim(); const shortMax=shortRaw===""?null:Math.max(0,Number(shortRaw));
    setStatus("جاري البحث...");
    const cache=await loadScannerCache({wait:true,maxAttempts:180});
-   await loadPublicErtikaz();
    if(!cache.ready||!scannerCache.length){setStatus(cache.buildError?`فشل تجهيز بيانات الباحث: ${escapeHtml(cache.buildError)}`:"بيانات الباحث قيد التجهيز لأول مرة. انتظر اكتمال الكاش ثم اضغط بحث مرة أخرى.","err");return;}
-   // If the technical cache currently has no live prices, force one read of
-   // the independent five-minute price lane before filtering. This prevents a
-   // stale/empty technical snapshot from making a valid search return 0 rows.
-   const liveCount=scannerCache.reduce((n,x)=>n+(Number.isFinite(Number(x?.extendedPrice))&&Number(x.extendedPrice)>0?1:0),0);
-   if(liveCount===0)await loadCurrentPrices();
-
-   // Closed market: use the cached official regular close published once by
-   // the server. The browser must not trigger a new Massive request from search.
+   // IMPORTANT: search runs only against the already-preloaded snapshot.
+   // Current-price refresh happens independently in the background; it must
+   // never delay a user's search click.
    const cutoff=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
    const selectedExchange=$("splitExchange")?.value||"ALL";
-   const candidates=scannerCache.filter(x=>{
-     const price=Number(x.extendedPrice);
-     return (selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)
+   const candidates=scannerCache.map(x=>({row:x,price:scannerSearchPrice(x)})).filter(({row:x,price})=>
+     (selectedExchange==='ALL'||x.primaryExchange===selectedExchange||x.exchange===selectedExchange)
        &&x.splitDate>=cutoff&&Number.isFinite(price)&&price>0&&Number.isFinite(Number(x.splitOpen))
        &&price<=maxPrice&&price<=Number(x.splitOpen)*(1-drop/100)&&Number.isFinite(Number(x.rsi))&&Number(x.rsi)<=rsiMax
-       &&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax));
-   });
+       &&(shortMax==null||(Number.isFinite(Number(x.shortShares))&&Number(x.shortShares)<=shortMax))
+   );
    setStatus("جاري البحث...");
-   for(let i=0;i<candidates.length&&!stopped;i++){while(paused&&!stopped)await sleep(250);if(stopped)break;const x=candidates[i],price=Number(x.extendedPrice);setStatus("جاري البحث...");addRow({...x,current:price,currentPrice:price,extendedPrice:price,target:Number(x.splitOpen)*(1-drop/100),drop:(Number(x.splitOpen)-price)/Number(x.splitOpen)*100});scanned++;updateStats();if(i%25===0)await sleep(0);}
+   for(let i=0;i<candidates.length&&!stopped;i++){while(paused&&!stopped)await sleep(250);if(stopped)break;const {row:x,price}=candidates[i];setStatus("جاري البحث...");addRow({...x,current:price,currentPrice:price,searchPrice:price,target:Number(x.splitOpen)*(1-drop/100),drop:(Number(x.splitOpen)-price)/Number(x.splitOpen)*100});scanned++;updateStats();if(i%25===0)await sleep(0);}
    updateSearchDataTime();
    if(stopped)setStatus(`تم الإيقاف. النتائج: <b>${results}</b>.`);else setStatus(`تم العثور على ${results} نتيجة.`,"ok");
  }catch(e){if(e?.name!=="AbortError"&&!stopped)setStatus("خطأ: "+e.message,"err")} finally{running=false;scanAbortController=null;$("start").disabled=false;$("stop").disabled=true;$("stop").textContent="■ إيقاف";$("pause").disabled=true;$("resume").disabled=true;}
@@ -631,7 +528,6 @@ function cacheTickerSearchMatches(query){
   return scannerCache.filter(row=>normalizeCacheTickerQuery(row?.ticker)===q);
 }
 function renderCacheTickerSearchResult(rows,query){
-  cacheTickerSearchCurrentQuery=query;
   const out=$("cacheTickerSearchResult"),status=$("cacheTickerSearchStatus");
   if(!out||!status)return;
   out.innerHTML='';
@@ -653,7 +549,7 @@ function renderCacheTickerSearchResult(rows,query){
     const ticker=String(row?.ticker||'').toUpperCase();
     const splitDate=row?.splitDate||'';
     const on=isFavorite(ticker,splitDate);
-    tr.innerHTML=`<td><b>${escapeHtml(ticker)}</b>${ertikazInlineHtml(ticker)}</td><td>${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td>${escapeHtml(splitDate||'—')}</td><td>${fmt(row?.rsi)}</td><td><button type="button" class="btn ${on?'secondary':'start'} cacheTickerAddBtn">${on?'★ موجود في المفضلة':'⭐ إضافة إلى المفضلة'}</button></td>`;
+    tr.innerHTML=`<td><b>${escapeHtml(ticker)}</b></td><td>${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td>${escapeHtml(splitDate||'—')}</td><td>${fmt(row?.rsi)}</td><td><button type="button" class="btn ${on?'secondary':'start'} cacheTickerAddBtn">${on?'★ موجود في المفضلة':'⭐ إضافة إلى المفضلة'}</button></td>`;
     const btn=tr.querySelector('.cacheTickerAddBtn');
     btn.onclick=async()=>{
       if(isFavorite(ticker,splitDate)){
@@ -678,7 +574,6 @@ function renderCacheTickerSearchResult(rows,query){
         status.textContent=e?.message||'تعذر إضافة السهم إلى المفضلة.';
       }
     };
-    bindErtikazInlineButtons(tr);
     body.appendChild(tr);
   });
   table.appendChild(body);wrap.appendChild(table);out.appendChild(wrap);
@@ -700,7 +595,6 @@ async function searchTickerInCache(){
       status.textContent='جاري تحميل كاش الباحث…';
       await loadScannerCache({wait:true,maxAttempts:30});
     }
-    await loadPublicErtikaz();
     const rows=cacheTickerSearchMatches(query);
     renderCacheTickerSearchResult(rows,query);
   }catch(e){
@@ -714,19 +608,8 @@ $("pause").onclick=()=>{if(!running||stopped)return;paused=true;$("pause").disab
 $("resume").onclick=()=>{if(!running||stopped)return;paused=false;$("pause").disabled=false;$("resume").disabled=true;setStatus(`▶ تم استئناف البحث — النتائج الحالية: <b>${results}</b>.`);};
 $("stop").onclick=()=>{if(!running)return;stopped=true;paused=false;if(scanAbortController)scanAbortController.abort();$("stop").disabled=true;$("pause").disabled=true;$("resume").disabled=true;$("stop").textContent="⏹ جارٍ الإيقاف...";setStatus(`جارٍ إيقاف البحث... النتائج الحالية: <b>${results}</b>.`);};
 
-async function loadFavorites(){try{await loadPublicErtikaz();const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث الأسعار…';refreshFavoriteData(false);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
-function renderFavorites(){
-  const body=$('favoritesResults');if(!body)return;
-  body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';
-  for(const f of favoriteItems){
-    const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';
-    const x=cacheFind(f)||{};
-    const price=displayPrice(x),change=Number(x?.changePct),short=Number(x?.shortShares),fee=Number(x?.borrowFee),ff=formatCompactShares(x?.freeFloat);
-    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b>${ertikazInlineHtml(f.ticker)}</div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
-    tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});bindErtikazInlineButtons(tr);tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
-  }
-}
-
+async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث بيانات المفضلة…';await refreshFavoriteData(true);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
+function renderFavorites(){const body=$('favoritesResults');if(!body)return;body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';for(const f of favoriteItems){const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">—</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">—</td><td class="fv-fee">—</td><td class="fv-float">—</td><td class="fv-change">—</td>`;tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);}}
 function emaSeries(values,period){if(!Array.isArray(values)||values.length<period)return [];const k=2/(period+1);let ema=values.slice(0,period).reduce((a,b)=>a+b,0)/period;const out=[ema];for(let i=period;i<values.length;i++){ema=(values[i]-ema)*k+ema;out.push(ema);}return out;}
 function cciValue(bars,period=14){if(!Array.isArray(bars)||bars.length<period)return NaN;const tp=bars.map(b=>(Number(b.h)+Number(b.l)+Number(b.c))/3);const w=tp.slice(-period),mean=w.reduce((a,b)=>a+b,0)/period,dev=w.reduce((a,b)=>a+Math.abs(b-mean),0)/period;return dev===0?0:(tp[tp.length-1]-mean)/(0.015*dev);}
 function completedDailyBars(bars){const today=new Date().toISOString().slice(0,10);return (bars||[]).filter(b=>dateFromBar(b)&&dateFromBar(b)<today);}
@@ -805,42 +688,22 @@ async function runFavoriteDetails(f,tr){
  showDetailsLoading(f);
  try{await loadScannerCache();const x=cacheFind(f);if(!x)throw Error('بيانات هذا السهم غير موجودة في التخزين الحالي.');const dropPct=Number.isFinite(Number(x.splitOpen))&&Number.isFinite(Number(x.current))?(Number(x.splitOpen)-Number(x.current))/Number(x.splitOpen)*100:NaN;const rows=[['السهم',x.ticker],['افتتاح يوم التقسيم',Number.isFinite(Number(x.splitOpen))?'$'+fmt(x.splitOpen):'غير متاح'],['الهدف',Number.isFinite(Number(x.splitOpen))?'$'+fmt(Number(x.splitOpen)*(1-Number($('drop').value||0)/100)):'غير متاح'],['السعر الحالي',Number.isFinite(displayPrice(x))?'$'+fmt(displayPrice(x)):'غير متاح'],['نسبة الهبوط',Number.isFinite(dropPct)?fmt(dropPct)+'%':'غير متاح'],['تاريخ التقسيم',x.splitDate||'غير متاح'],['RSI (14)',Number.isFinite(Number(x.rsi))?fmt(x.rsi):'غير متاح'],['القاع',Number.isFinite(Number(x.low))?'$'+fmt(x.low):'غير متاح'],['تاريخ القاع',x.lowDate||'غير متاح'],['IBKR Available Shares',Number.isFinite(Number(x.shortShares))?Number(x.shortShares).toLocaleString():'غير متاح'],['IBKR Borrow Fee',Number.isFinite(Number(x.borrowFee))?fmt(x.borrowFee,2)+'%':'غير متاح'],['Free Float',formatCompactShares(x.freeFloat)==='—'?'غير متاح':formatCompactShares(x.freeFloat)]];$('detailsTitle').textContent='تفاصيل السهم — '+x.ticker;$('detailsRows').innerHTML=rows.map(r=>`<div class="testRow"><span class="testLabel">${escapeHtml(r[0])}</span><span class="testValue">${escapeHtml(r[1])}</span></div>`).join('');$('detailsNote').textContent='بيانات محدثة محفوظة في الموقع.';$('detailsModal').classList.add('show');}catch(e){$("detailsRows").innerHTML='<div class="testRow"><span class="testLabel">خطأ</span><span class="testValue">'+escapeHtml(e.message||'تعذر عرض التفاصيل')+'</span></div>';$("detailsNote").textContent='تعذر تحميل التفاصيل.';}finally{if(btn)btn.disabled=false;}
 }
-function refreshFavoriteCellsInPlace(){
-  if(!$('sec-favorites')?.classList.contains('active'))return;
-  for(const f of favoriteItems){
-    const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));
-    if(!tr)continue;
-    const x=cacheFind(f);if(!x)continue;
-    const price=displayPrice(x),change=Number(x.changePct),short=Number(x.shortShares),fee=Number(x.borrowFee),ff=formatCompactShares(x.freeFloat);
-    if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);
-    if(Number.isFinite(change))tr.querySelector('.fv-change').textContent=(change>=0?'+':'')+fmt(change)+'%';
-    if(Number.isFinite(short))tr.querySelector('.fv-short').textContent=short.toLocaleString();
-    if(Number.isFinite(fee))tr.querySelector('.fv-fee').textContent=fmt(fee,2)+'%';
-    if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;
-  }
-}
-
-async function refreshFavoriteData(full=false){
+async function refreshFavoriteData(full=true){
   if(favoriteRefreshing||!favoriteItems.length)return; favoriteRefreshing=true;
   try{
-    // تحديث واجهة المفضلة بسرعة: نستخدم الكاش الموجود فوراً ثم نطلب السعر اللحظي.
-    // لا ننتظر إعادة بناء كاش الباحث لأنها عملية أثقل وليست مطلوبة لعرض السعر الحالي.
-    if(!Array.isArray(scannerCache)||!scannerCache.length){
-      await loadScannerCache({force:false,maxAttempts:1});
-    }
+    // Keep the current snapshot visible, then refresh the published cache and
+    // the live-price lane. A failed live refresh must not turn existing values
+    // into dashes.
+    if(!Array.isArray(scannerCache)||!scannerCache.length)await loadScannerCache({force:true,maxAttempts:3});
     await loadCurrentPrices();
-    refreshFavoriteCellsInPlace();
+    if(full)await loadScannerCache({force:true,maxAttempts:3});
+    await loadCurrentPrices();
     let done=0;
-    for(const f of favoriteItems){if(cacheFind(f))done++;}
-    $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${currentPricesUpdatedAt?freshnessLabel(currentPricesUpdatedAt):cacheAgeText()}`;
-    // إذا طُلب تحديث كامل، حدّث الكاش الثقيل في الخلفية فقط، ثم حدّث العرض مرة أخرى.
-    if(full){
-      refreshScannerCacheInBackground().then(()=>loadCurrentPrices()).catch(()=>{});
-    }
+    for(const f of favoriteItems){const tr=[...document.querySelectorAll('#favoritesResults tr')].find(x=>x.dataset.ticker===f.ticker&&x.dataset.split===(f.splitDate||''));if(!tr)continue;const x=cacheFind(f);if(!x)continue;const oldPrice=tr.querySelector('.fv-price').textContent,oldChange=tr.querySelector('.fv-change').textContent,oldShort=tr.querySelector('.fv-short').textContent,oldFee=tr.querySelector('.fv-fee').textContent,oldFloat=tr.querySelector('.fv-float').textContent;const price=displayPrice(x);if(Number.isFinite(price))tr.querySelector('.fv-price').textContent='$'+fmt(price);if(Number.isFinite(Number(x.changePct)))tr.querySelector('.fv-change').textContent=(Number(x.changePct)>=0?'+':'')+fmt(x.changePct)+'%';if(Number.isFinite(Number(x.shortShares)))tr.querySelector('.fv-short').textContent=Number(x.shortShares).toLocaleString();if(Number.isFinite(Number(x.borrowFee)))tr.querySelector('.fv-fee').textContent=fmt(x.borrowFee,2)+'%';const ff=formatCompactShares(x.freeFloat);if(ff!=='—')tr.querySelector('.fv-float').textContent=ff;done++;}
+    $('favoritesStatus').textContent=`تم تحديث ${done} سهم${done===1?'':'ًا'} — ${cacheAgeText()}`;
   }catch(e){$('favoritesStatus').textContent='تعذر تحديث المفضلة: '+(e.message||'خطأ');} finally{favoriteRefreshing=false;}
 }
-
-function startFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);refreshFavoriteData(false);favoriteRefreshTimer=setInterval(()=>{if($('sec-favorites')?.classList.contains('active'))refreshFavoriteData(false)},30000);}
+function startFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);refreshFavoriteData(true);favoriteRefreshTimer=setInterval(()=>{if($('sec-favorites')?.classList.contains('active'))refreshFavoriteData(true)},120000);}
 function stopFavoriteAutoRefresh(){clearInterval(favoriteRefreshTimer);favoriteRefreshTimer=null;}
 
 async function loadIPOs(){
@@ -926,7 +789,7 @@ async function loadMe(){
       if(r.status>=500){throw Error(d.error||`HTTP ${r.status}`);}
       if(!r.ok||!d.authenticated){localStorage.removeItem("scanner_session_hint");sessionKnown=false;sessionReady=false;applyMaintenanceState({siteMode:"normal"});document.body.classList.remove("session-ok");$("authOverlay").classList.remove("hidden");return false;}
       applyMaintenanceState({siteMode:"normal"});
-      sessionReady=true;localStorage.setItem("scanner_session_hint","1");sessionKnown=true;window.currentUserEmail=d.user?.email||"";loadAlertSettings();loadNotificationHistory();document.body.classList.add("session-ok");await loadScannerSettings();loadPublicErtikaz();loadFavorites();loadScannerCache().catch(()=>{});$("authOverlay").classList.add("hidden");showResearchNotice();loadMySupportReplies();
+      sessionReady=true;localStorage.setItem("scanner_session_hint","1");sessionKnown=true;window.currentUserEmail=d.user?.email||"";loadAlertSettings();loadNotificationHistory();document.body.classList.add("session-ok");await loadScannerSettings();loadFavorites();loadScannerCache().catch(()=>{});$("authOverlay").classList.add("hidden");showResearchNotice();loadMySupportReplies();
       const plan=(window.sitePricing?.plans||[]).find(x=>x.id===d.user.plan)?.label||d.user.plan||"—";
       const rem=d.user.expiresAt?Math.max(0,Math.ceil((new Date(d.user.expiresAt+"T23:59:59").getTime()-Date.now())/86400000)):null;
       $("infoEmail").textContent=d.user.email||d.user.username||"—";
@@ -1113,9 +976,6 @@ async function loadSiteSettingsPanel(){
     $("siteMode").value=p.siteMode||"normal";
     $("siteModeMessage").value=p.siteModeMessage||"";
     $("autoUpdateToggle").checked=(p.auto_update_enabled!==undefined?p.auto_update_enabled:p.autoUpdateEnabled)!==false;
-    $("wyckoffAutoUpdateToggle").checked=p.wyckoffAutoUpdateEnabled!==false;
-    $("ertikazAutoUpdateToggle").checked=p.ertikazAutoUpdateEnabled!==false;
-    $("newsAutoUpdateToggle").checked=p.newsAutoUpdateEnabled!==false;
     $("subscriptionRequestToggle").checked=p.subscriptionRequestsEnabled!==false;
     $("autoUpdateMsg").textContent="";
     $("siteModeMsg").textContent="";
@@ -1136,23 +996,7 @@ async function saveAutoUpdate(){
     msg.textContent=actual?"تم تفعيل التحديث التلقائي. سيعمل التحديث الفني والأسعار كل 5 دقائق، والشورت حسب جدول التشغيل ثم يُنشر فور اكتماله.":"تم إيقاف التحديث التلقائي بالكامل. لن تبدأ أي جدولة جديدة، والتحديثات اليدوية تبقى مستقلة.";
   }catch(e){msg.textContent=e.message||"تعذر حفظ إعداد التحديث التلقائي.";}finally{btn.disabled=false;}
 }
-if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;
-async function saveModelAutoUpdate(model){
-  const ids={wyckoff:['wyckoffAutoUpdateToggle','wyckoffAutoUpdateMsg','saveWyckoffAutoUpdate','Wyckoff'],ertikaz:['ertikazAutoUpdateToggle','ertikazAutoUpdateMsg','saveErtikazAutoUpdate','ارتكاز'],news:['newsAutoUpdateToggle','newsAutoUpdateMsg','saveNewsAutoUpdate','الأخبار']};
-  const [toggleId,msgId,btnId,label]=ids[model]||[]; if(!toggleId)return;
-  const toggle=$(toggleId),msg=$(msgId),btn=$(btnId); if(!toggle||!msg||!btn)return;
-  try{
-    const enabled=toggle.checked; btn.disabled=true; msg.textContent=`جاري حفظ إعداد التحديث التلقائي لـ ${label}...`;
-    const payload={}; payload[model+'AutoUpdateEnabled']=enabled;
-    const d=await adminAction('save-site-settings',payload); window.sitePricing=d.pricing;
-    toggle.checked=d.pricing[model+'AutoUpdateEnabled']!==false;
-    msg.textContent=toggle.checked?`تم تفعيل التحديث التلقائي لـ ${label}.`:`تم إيقاف التحديث التلقائي لـ ${label}. التشغيل اليدوي يبقى متاحًا.`;
-  }catch(e){msg.textContent=e.message||`تعذر حفظ إعداد ${label}.`;}finally{btn.disabled=false;}
-}
-if($("saveWyckoffAutoUpdate"))$("saveWyckoffAutoUpdate").onclick=()=>saveModelAutoUpdate('wyckoff');
-if($("saveErtikazAutoUpdate"))$("saveErtikazAutoUpdate").onclick=()=>saveModelAutoUpdate('ertikaz');
-if($("saveNewsAutoUpdate"))$("saveNewsAutoUpdate").onclick=()=>saveModelAutoUpdate('news');
-$("alertDropMode")?.addEventListener("change",updateAlertDropInput);
+if($("saveAutoUpdate"))$("saveAutoUpdate").onclick=saveAutoUpdate;$("alertDropMode")?.addEventListener("change",updateAlertDropInput);
 async function saveSiteMode(){
   try{
     const mode=$("siteMode").value;
@@ -1438,85 +1282,13 @@ async function loadSiteStats(){
   }catch(e){out.textContent=e.message||"تعذر تحميل إحصائيات الموقع.";}
 }
 function showAdminHome(){siteSettingsUnlocked=false;closeSiteSettingsUnlock();$("adminHome").style.display="block";document.querySelectorAll(".adminPanel").forEach(x=>x.classList.remove("show"));}
-function wyckoffStageLabel(x){return x?.stageLabel||({markdown:'هبوط — Markdown',accumulation:'تجميع — Accumulation',markup:'صعود — Markup',distribution:'تصريف — Distribution'}[x?.stage]||x?.stage||'—');}
-function renderWyckoff(data,status,config){
-  const rows=Array.isArray(data?.records)?data.records:[]; const body=$("wyckoffResults"); if(!body)return;
-  body.innerHTML=rows.map(x=>`<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(wyckoffStageLabel(x))}</td><td>${Number.isFinite(Number(x.stageFit))?Number(x.stageFit)+'%':'—'}</td><td>${escapeHtml(x.manipulationLike||'—')}</td><td>${escapeHtml(x.lastDate||'—')}</td><td>${Number(x.barsCount||0)}</td><td>${(x.events||[]).slice(-4).map(e=>escapeHtml(e.type||'')).join('، ')||'—'}</td></tr>`).join('')||'<tr><td colspan="7">لا توجد نتائج.</td></tr>';
-  const meta=$("wyckoffMeta"); if(meta){meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — نافذة ${Number(data.windowSessions||35)} جلسة — وزن آخر 10: ${Number(data.recentWeightPercent??config?.recentWeightPercent??60)}%`:'لا توجد نتائج بعد.';}
-  const slider=$("wyckoffRecentWeight"),value=$("wyckoffRecentWeightValue"); if(slider){slider.value=String(Number(config?.recentWeightPercent??data?.recentWeightPercent??60));if(value)value.textContent=slider.value+'%';}
-  if(status?.state==='building'||status?.state==='collecting'||status?.state==='analyzing')$("wyckoffMsg").textContent=`${status.state==='collecting'?'جاري جمع بيانات Wyckoff':status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
-}
-let wyckoffPollTimer=null,ertikazPollTimer=null;
-async function loadWyckoff(){
-  const msg=$("wyckoffMsg"); try{const d=await adminAction('wyckoff');renderWyckoff(d.data,d.status,d.config);const active=['building','collecting','analyzing'].includes(d.status?.state);if(active){msg.textContent=`${d.status.state==='collecting'?'جاري جمع البيانات':d.status.state==='analyzing'?'جاري تطبيق نموذج Wyckoff':'جاري التحليل'}: ${Number(d.status.processed||0)}/${Number(d.status.total||0)}…`;if(!wyckoffPollTimer)wyckoffPollTimer=setInterval(()=>loadWyckoff().catch(()=>{}),3000);}else{if(wyckoffPollTimer){clearInterval(wyckoffPollTimer);wyckoffPollTimer=null;}msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل Wyckoff بعد.';}}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج Wyckoff.';}}
-async function saveWyckoffSettings(){const slider=$("wyckoffRecentWeight"),msg=$("wyckoffMsg");if(!slider)return;try{const d=await adminAction("save-wyckoff-settings",{recentWeightPercent:Number(slider.value)});if(!d?.ok)throw Error(d?.error||"تعذر حفظ الوزن.");$("wyckoffRecentWeightValue").textContent=Number(d.config?.recentWeightPercent??slider.value)+"%";if(msg)msg.textContent="تم حفظ الوزن. شغّل Wyckoff لتطبيقه.";}catch(e){if(msg)msg.textContent=e.message||"تعذر حفظ الوزن.";}}
-async function collectModelDataNow(){const btn=$("collectModelData"),msg=$("wyckoffMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال Wyckoff إلى GitHub Actions…";try{const d=await adminAction("collect-model-data");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل Wyckoff.");msg.textContent="بدأ تشغيل Wyckoff في GitHub Actions.";await sleep(1200);await loadWyckoff();}catch(e){msg.textContent=e.message||"تعذر تشغيل Wyckoff.";}finally{btn.disabled=false;}}
-function ertikazCheckHtml(c){
-  const ok=Boolean(c?.passed);const status=ok?'✓ متحقق':'✕ غير متحقق';let extra='';
-  if(c?.key==='splitDays'&&c?.milestones)extra=`<div class="ertikazMilestones"><span>20: ${c.milestones[20]?'✓':'—'}</span><span>30: ${c.milestones[30]?'✓':'—'}</span><span>50: ${c.milestones[50]?'✓':'—'}</span></div>`;
-  return `<div class="ertikazCheck ${ok?'ok':'no'}"><div><div class="ertikazCheckTitle">${escapeHtml(c?.label||'—')}</div><div class="ertikazCheckDetail">${escapeHtml(c?.detail||'—')}</div>${extra}</div><div class="ertikazBadge">${status}</div></div>`;
-}
-function openErtikazModal(row){
-  const m=$("ertikazModal"),title=$("ertikazModalTitle"),meta=$("ertikazModalMeta"),body=$("ertikazChecks");if(!m||!body)return;
-  title.textContent=`ارتكاز — ${row.ticker||'—'}`;
-  meta.textContent=`${row.passedCount||0}/${row.totalChecks||7} شروط متحققة — تاريخ التقسيم: ${row.splitDate||'غير متاح'} — آخر يوم: ${row.lastDailyDate||'غير متاح'}`;
-  body.innerHTML=(row.checks||[]).map(ertikazCheckHtml).join('')||'<div class="small">لا توجد تفاصيل.</div>';m.classList.add('show');
-}
-function closeErtikazModal(){$("ertikazModal")?.classList.remove('show');}
-function renderErtikaz(data,status){
-  const rows=Array.isArray(data?.records)?data.records:[],body=$("ertikazResults");if(!body)return;
-  body.innerHTML=rows.map(x=>{
-    const passed=Number(x.passedCount||0),total=Number(x.totalChecks||7)||7,qualified=passed===total;
-    const status=qualified?'✓ مكتمل':'غير مكتمل';
-    return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="ertikazLink ${qualified?'ertikazQualified':''}" data-ertikaz-ticker="${escapeHtml(x.ticker||'')}">ارتكاز</button></td><td><b>${passed}/${total}</b></td><td>${status}</td><td>${escapeHtml(x.splitDate||'—')}</td><td>${escapeHtml(x.lastDailyDate||'—')}</td></tr>`;
-  }).join('')||'<tr><td colspan="7">لا توجد أسهم في الكاش المركزي حتى آخر تحليل.</td></tr>';
-  const meta=$("ertikazMeta");if(meta)meta.textContent=data?`آخر تحليل: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — تم تحليل ${Number(data.universeTickers||rows.length)} سهم — المكتمل بالكامل: ${Number(data.qualifiedCount||0)}`:'لا توجد نتائج بعد.';
-  body.querySelectorAll('[data-ertikaz-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.ertikazTicker);if(row)openErtikazModal(row);}));
-  const active=['building','collecting','analyzing'].includes(status?.state);const msg=$("ertikazMsg");
-  if(active&&msg)msg.textContent=`${status.state==='collecting'?'جاري جمع البيانات اليومية':status.state==='analyzing'?'جاري تطبيق شروط ارتكاز':'جاري التحليل'}: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
-}
-async function loadErtikaz(){const msg=$("ertikazMsg");try{const d=await adminAction('ertikaz');renderErtikaz(d.data,d.status);const active=['building','collecting','analyzing'].includes(d.status?.state);if(active&&!ertikazPollTimer)ertikazPollTimer=setInterval(()=>loadErtikaz().catch(()=>{}),3000);if(!active&&ertikazPollTimer){clearInterval(ertikazPollTimer);ertikazPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:'لم يتم تشغيل ارتكاز بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل نموذج ارتكاز.';}}
-async function collectErtikazNow(){const btn=$("collectErtikaz"),msg=$("ertikazMsg");if(!btn)return;btn.disabled=true;msg.textContent="تم إرسال ارتكاز إلى GitHub Actions…";try{const d=await adminAction("collect-ertikaz");if(!d?.ok)throw Error(d?.error||"تعذر تشغيل ارتكاز.");msg.textContent="بدأ تشغيل ارتكاز في GitHub Actions.";await sleep(1200);await loadErtikaz();}catch(e){msg.textContent=e.message||"تعذر تشغيل ارتكاز.";}finally{btn.disabled=false;}}
-let newsPollTimer=null,newsRowsCache=[],newsModalPollTimer=null,newsModalTicker='';
-function renderNews(data,status){
-  const rows=Array.isArray(data?.records)?data.records:[],body=$("newsResults"); if(!body)return;
-  newsRowsCache=rows;
-  body.innerHTML=rows.map(x=>{const count=Number(x.newsCount||0);return `<tr><td><b>${escapeHtml(x.ticker||'—')}</b></td><td>${escapeHtml(x.name||x.companyName||'—')}</td><td><button type="button" class="newsLink" data-news-ticker="${escapeHtml(x.ticker||'')}">أخبار</button></td><td>${count.toLocaleString('ar-SA')}</td><td>${escapeHtml(x.updatedAt?new Date(x.updatedAt).toLocaleString('ar-SA'):'—')}</td></tr>`;}).join('')||'<tr><td colspan="5">لا توجد أسهم في الكاش المركزي.</td></tr>';
-  const meta=$("newsMeta"); if(meta)meta.textContent=data?`آخر مزامنة: ${data.updatedAt?new Date(data.updatedAt).toLocaleString('ar-SA'):'—'} — ${Number(data.universeTickers||rows.length)} سهم — المصدر: Investing.com العربي`:'لا توجد نتائج بعد.';
-  body.querySelectorAll('[data-news-ticker]').forEach(btn=>btn.addEventListener('click',()=>{const row=rows.find(x=>x.ticker===btn.dataset.newsTicker);if(row)openNewsModal(row);}));
-  const active=['collecting','analyzing','building'].includes(status?.state),msg=$("newsMsg");
-  if(active&&msg)msg.textContent=`جاري جمع الأخبار: ${Number(status.processed||0)}/${Number(status.total||0)}…`;
-}
-function openNewsModal(row){
-  let modal=$("newsModal");
-  if(!modal){modal=document.createElement('div');modal.id='newsModal';modal.className='testModal';modal.innerHTML='<div class="testBox" style="max-width:900px"><div class="testHead"><h2 id="newsModalTitle">📰 الأخبار</h2><button type="button" class="testClose" id="newsModalClose">×</button></div><div id="newsModalMeta" class="small"></div><div id="newsModalBody" style="margin-top:12px;max-height:65vh;overflow:auto"></div></div>';document.body.appendChild(modal);modal.onclick=e=>{if(e.target===modal){modal.classList.remove('show');if(newsModalPollTimer){clearInterval(newsModalPollTimer);newsModalPollTimer=null;}}};$("newsModalClose").onclick=()=>{modal.classList.remove('show');if(newsModalPollTimer){clearInterval(newsModalPollTimer);newsModalPollTimer=null;}};}
-  const ticker=String(row?.ticker||'').toUpperCase();
-  newsModalTicker=ticker;
-  $("newsModalTitle").textContent=`📰 ${ticker||'—'} — الأخبار`;$('newsModalMeta').textContent='جاري تحميل الأخبار المحفوظة…';$('newsModalBody').innerHTML='<div class="small">جاري قراءة كاش الأخبار لهذا السهم…</div>';modal.classList.add('show');
-  const loadDetail=()=>{
-    if(!modal.classList.contains('show')||newsModalTicker!==ticker)return;
-    adminAction('news-detail',{ticker}).then(d=>{
-      if(newsModalTicker!==ticker)return;
-      const detail=d.data||{},items=Array.isArray(detail.news)?detail.news:[];
-      $('newsModalMeta').textContent=`آخر 6 أشهر — ${items.length.toLocaleString('ar-SA')} خبر${detail.coverageComplete?' — مكتملة الفترة':' — الفترة غير مكتملة'}${detail.error?' — '+detail.error:''}`;
-      $('newsModalBody').innerHTML=items.length?items.map(n=>`<article class="adminBox" style="margin-bottom:10px"><div style="font-weight:900">${escapeHtml(n.titleAr||n.title||'—')}</div><div class="small" style="margin-top:5px">${escapeHtml(n.source||'Investing.com')} — ${escapeHtml(n.publishedAt||'التاريخ غير متاح')} — <b>${escapeHtml(n.impactAr||'محايد')}</b></div><div style="margin-top:8px;line-height:1.8">${escapeHtml(n.summaryAr||'لا يوجد ملخص متاح.')}</div>${n.url?`<div style="margin-top:8px"><a href="${escapeHtml(n.url)}" target="_blank" rel="noopener noreferrer">فتح الخبر الأصلي</a></div>`:''}</article>`).join(''):'<div class="small">لا توجد أخبار محفوظة لهذا السهم حتى الآن.</div>';
-    }).catch(e=>{if(newsModalTicker===ticker){$('newsModalMeta').textContent='';$('newsModalBody').innerHTML=`<div class="small">${escapeHtml(e.message||'تعذر تحميل أخبار السهم.')}</div>`;}});
-  };
-  if(newsModalPollTimer)clearInterval(newsModalPollTimer);
-  newsModalPollTimer=setInterval(loadDetail,4000);
-  loadDetail();
-}
-
-async function loadNews(){const msg=$("newsMsg");try{const d=await adminAction('news');renderNews(d.data,d.status);const active=['collecting','analyzing','building'].includes(d.status?.state);if(active&&!newsPollTimer)newsPollTimer=setInterval(()=>loadNews().catch(()=>{}),4000);if(!active&&newsPollTimer){clearInterval(newsPollTimer);newsPollTimer=null;}if(!active&&msg)msg.textContent=d.status?.state==='ready'?`آخر تشغيل اكتمل في ${d.status.completedAt?new Date(d.status.completedAt).toLocaleString('ar-SA'):'—'}.`:d.status?.state==='partial'?`اكتمل جزء من التشغيل، وما زالت ${Number(d.status.incomplete||0)+Number(d.status.failed||0)} أسهم تحتاج استكمالًا في التشغيل القادم.`:'لم يتم تشغيل الأخبار بعد.';}catch(e){if(msg)msg.textContent=e.message||'تعذر تحميل الأخبار.';}}
-async function collectNewsNow(){const btn=$("collectNews"),msg=$("newsMsg");if(!btn)return;btn.disabled=true;msg.textContent='تم إرسال الأخبار إلى GitHub Actions…';try{const d=await adminAction('collect-news');if(!d?.ok)throw Error(d?.error||'تعذر تشغيل الأخبار.');msg.textContent='بدأ جمع الأخبار في GitHub Actions.';await sleep(1200);await loadNews();}catch(e){msg.textContent=e.message||'تعذر تشغيل الأخبار.';}finally{btn.disabled=false;}}
-function selectModelView(name){const w=$("modelViewWyckoff"),e=$("modelViewErtikaz"),n=$("modelViewNews");if(w)w.style.display=name==='wyckoff'?'block':'none';if(e)e.style.display=name==='ertikaz'?'block':'none';if(n)n.style.display=name==='news'?'block':'none';if(name==='wyckoff')loadWyckoff();else if(name==='ertikaz')loadErtikaz();else loadNews();}
 async function showAdminPanel(name){
   if(name==="site"){
     if(!await unlockSiteSettings())return;
     if(!await loadSiteSettingsPanel())return;
   }
   $("adminHome").style.display="none";document.querySelectorAll(".adminPanel").forEach(x=>x.classList.remove("show"));$("adminPanel-"+name).classList.add("show");
-  if(name==="customers")loadAdminUsers();if(name==="support")loadAdminRequests("support","pending");if(name==="stats")loadSiteStats();if(name==="models"){selectModelView('wyckoff');}
+  if(name==="customers")loadAdminUsers();if(name==="support")loadAdminRequests("support","pending");if(name==="stats")loadSiteStats();
 }
 document.querySelectorAll("[data-admin-panel]").forEach(b=>{
   b.addEventListener('click',async e=>{
@@ -1525,7 +1297,6 @@ document.querySelectorAll("[data-admin-panel]").forEach(b=>{
     await showAdminPanel(name);
   });
 });document.querySelectorAll(".adminBack").forEach(b=>b.onclick=showAdminHome);
-$("collectModelData")?.addEventListener("click",collectModelDataNow);$("refreshWyckoff")?.addEventListener("click",loadWyckoff);$("saveWyckoffSettings")?.addEventListener("click",saveWyckoffSettings);$("wyckoffRecentWeight")?.addEventListener("input",e=>{const v=$("wyckoffRecentWeightValue");if(v)v.textContent=e.target.value+"%";});$("collectErtikaz")?.addEventListener("click",collectErtikazNow);$("refreshErtikaz")?.addEventListener("click",loadErtikaz);$("collectNews")?.addEventListener("click",collectNewsNow);$("refreshNews")?.addEventListener("click",loadNews);$("modelPickWyckoff")?.addEventListener("click",()=>selectModelView('wyckoff'));$("modelPickErtikaz")?.addEventListener("click",()=>selectModelView('ertikaz'));$("modelPickNews")?.addEventListener("click",()=>selectModelView('news'));$("ertikazModalClose")?.addEventListener("click",closeErtikazModal);
 
 async function approveRequest(id){
   const btn=[...document.querySelectorAll('.approveReq')].find(x=>x.dataset.id===id);
@@ -1603,25 +1374,3 @@ function activateSection(name){
 }
 document.querySelectorAll(".navBtn").forEach(b=>b.onclick=()=>{if(activateSection(b.dataset.sec))$("drawer").classList.remove("open");});
 $("refreshFavorites").onclick=()=>refreshFavoriteData(true);$("proofClose").onclick=()=>$("proofModal").classList.remove("show");$("testClose").onclick=()=>$("testModal").classList.remove("show");$("detailsClose").onclick=()=>$("detailsModal").classList.remove("show");document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".testModal.show").forEach(m=>m.classList.remove("show"));});
-
-document.addEventListener('click', async (e) => {
-    if (e.target && e.target.id === 'clearAlertsBtn') {
-        if (!confirm('هل تريد حقاً مسح جميع حالات التنبيهات القديمة وتصفيرها؟')) return;
-        
-        try {
-            const res = await apiFetch('/.netlify/functions/alerts?action=clear', {
-                method: 'DELETE'
-            });
-            
-            if (res.ok) {
-                alert('تمت تصفير التنبيهات القديمة بنجاح!');
-                location.reload();
-            } else {
-                alert('فشل تصفير التنبيهات من السيرفر');
-            }
-        } catch (err) {
-            console.error('Error clearing alerts:', err);
-            alert('حدث خطأ أثناء الاتصال بالـ API');
-        }
-    }
-});
