@@ -106,13 +106,40 @@ async function scrape(url,{browser=false,proxyType='datacenter',proxyCountry=''}
   const last=errors.at(-1)||'unknown';
   throw new Error(`ScrapingAnt failed after adaptive retries: ${last}`);
 }
+function normalizeNewsText(value){
+  return stripHtml(String(value||''))
+    .toLowerCase()
+    .replace(/&[a-z0-9#]+;/gi,' ')
+    .replace(/[^a-z0-9\u0600-\u06ff]+/gi,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
 function companyTokens(row={}){
   const raw=String(row?.name||row?.companyName||row?.company_name||'').trim();
   return raw
     .replace(/\b(adr|ads|corp|corporation|inc|incorporated|ltd|limited|plc|co|company|class|common|shares?|stock)\b/gi,' ')
     .split(/[^A-Za-z0-9\u0600-\u06FF]+/)
     .map(x=>x.trim().toLowerCase())
-    .filter(x=>x.length>=3);
+    .filter(x=>x.length>=3 && !/^(the|and|for|with|from|group|holdings?)$/i.test(x));
+}
+function companyNameMatch(haystack,row={}){
+  const raw=String(row?.name||row?.companyName||row?.company_name||'').trim();
+  if(!raw)return false;
+  const hay=normalizeNewsText(haystack);
+  const variants=[
+    raw,
+    raw.replace(/\b(adr|ads|corp|corporation|inc|incorporated|ltd|limited|plc|co|company|class|common|shares?|stock)\b/gi,' ')
+  ];
+  for(const value of variants){
+    const normalized=normalizeNewsText(value);
+    if(normalized.length>=3 && hay.includes(normalized))return true;
+  }
+  const tokens=companyTokens(row);
+  if(tokens.length===1)return new RegExp(`(?:^|[^a-z0-9\\u0600-\\u06ff])${tokens[0].replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')}(?:$|[^a-z0-9\\u0600-\\u06ff])`,'i').test(hay);
+  // For multi-word company names, require at least two meaningful name words.
+  // This avoids accepting generic market stories that happen to share one common word.
+  const hits=tokens.filter(token=>hay.includes(token));
+  return hits.length>=2;
 }
 function isBroadMarketArticle(article){
   let pathname='';try{pathname=new URL(String(article?.url||'')).pathname.toLowerCase();}catch{}
@@ -121,11 +148,15 @@ function isBroadMarketArticle(article){
 function companyArticleMatches(article,ticker,row={}){
   if(isBroadMarketArticle(article))return false;
   const t=cleanTicker(ticker).toLowerCase();
-  const hay=`${String(article?.title||'')} ${String(article?.summary||'')} ${String(article?.context||'')} ${String(article?.url||'')}`.toLowerCase();
-  const tickerHit=Boolean(t && new RegExp(`(?:^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:$|[^a-z0-9])`,'i').test(hay));
-  if(tickerHit)return true;
-  const tokens=companyTokens(row);
-  return tokens.some(tok=>hay.includes(tok));
+  // Match only text that belongs to the visible news item. The URL/path is NOT
+  // considered evidence because the user requires the ticker/company name to
+  // actually appear in the news, not merely in the company-news page URL.
+  const hay=`${String(article?.title||'')} ${String(article?.summary||'')} ${String(article?.context||'')}`;
+  if(t){
+    const re=new RegExp(`(?:^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')}(?:$|[^a-z0-9])`,'i');
+    if(re.test(hay))return true;
+  }
+  return companyNameMatch(hay,row);
 }
 async function findInvestingNewsUrl(ticker,row={}){
   const searchUrl=INVESTING_SEARCH+encodeURIComponent(ticker);
@@ -179,12 +210,10 @@ function extractArticles(html,{ticker,row,companyPage=false}={}){
     const dt=parseDate(around),sourceMatch=around.match(/(?:بواسطة|By)\s*([^•|]{2,80})/i),articleSource=sourceMatch?sourceMatch[1].trim():'Investing.com';
     const summary=around.replace(title,'').replace(/^(?:بواسطة|By)\s*[^•|]+[•|]?/i,'').replace(/^[-•|\s]+/,'').trim().slice(0,520);
     const article={url,title,summary,context:around.slice(0,1400),publishedDate:dt?dt.toISOString().slice(0,10):null,source:articleSource,sourceOrder:sourceOrder++};
-    // The URL was obtained from the verified company-news page. Keep that page
-    // context as the primary company association, while still rejecting known
-    // broad-market article paths. This prevents legitimate company articles from
-    // disappearing merely because the title/snippet omits the ticker/name.
-    const matches=companyArticleMatches(article,ticker,row);
-    if(!matches && !(companyPage&&!isBroadMarketArticle(article)))continue;
+    // Being listed on a company-news page is NOT enough. The ticker or the
+    // company name must actually appear in the visible news text. This prevents
+    // unrelated market stories from being assigned to the stock.
+    if(!companyArticleMatches(article,ticker,row))continue;
     const key=url.split('?')[0];
     if(!out.has(key))out.set(key,article);
   }
@@ -225,7 +254,9 @@ function buildTickerRecord(ticker,row,map,newsUrl,cutoff,extra={}){
 async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
   const old=normalizeSeed(seed),existingNews=Array.isArray(old?.news)?old.news:[];
   const companyName=row?.name||row?.companyName||row?.company_name||'';
-  const oldCompanyNews=existingNews.filter(x=>x?.companyVerified===true||companyArticleMatches({url:x?.url,title:x?.title,summary:x?.summary},ticker,row));
+  // Re-validate previously cached items as well. Older versions trusted the
+  // company-news page context and could have stored unrelated market stories.
+  const oldCompanyNews=existingNews.filter(x=>companyArticleMatches({url:x?.url,title:x?.title,summary:x?.summary,context:x?.summary},ticker,row));
   let newsUrl=old?.newsUrl||null;
   if(newsUrl){
     try{const u=new URL(newsUrl);u.searchParams.set('tab','company');newsUrl=u.toString();}catch{newsUrl=null;}
@@ -248,7 +279,10 @@ async function collectTicker(ticker,row,seed,cutoff,isInitial,{onPageSaved}={}){
       articles=extractArticles(html,{ticker,row,companyPage:true});
       if(!articles.length){html=await scrape(pageUrl(newsUrl,page),{browser:true,proxyType:'residential',proxyCountry:'US'});articles=extractArticles(html,{ticker,row,companyPage:true});}
     }catch(e){pageError=String(e?.message||e);break;}
-    if(!articles.length)break;
+    // An empty page can simply mean that the visible cards on that page were
+    // unrelated market stories and were rejected by the strict company filter.
+    // Do not stop the six-month crawl at that point; continue to later pages.
+    if(!articles.length)continue;
     pages++;
     let pageOld=0,pageExisting=0;
     for(const a of articles){

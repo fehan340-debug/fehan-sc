@@ -234,6 +234,58 @@ function updateDataFreshness(){const el=$("dataFreshness");if(el)el.textContent=
 setInterval(updateDataFreshness,60000);
 function cacheAgeText(){if(!scannerCacheUpdatedAt)return '';const d=Math.max(0,Date.now()-new Date(scannerCacheUpdatedAt).getTime());const h=Math.floor(d/3600000),m=Math.floor((d%3600000)/60000);return h?`آخر تحديث قبل ${h} س`:m?`آخر تحديث قبل ${m} د`:'تم التحديث الآن';}
 function cacheFind(f){if(!Array.isArray(scannerCache))return null;return scannerCache.find(x=>x.ticker===f.ticker&&x.splitDate===(f.splitDate||''))||scannerCache.find(x=>x.ticker===f.ticker)||null;}
+let ertikazCacheMap=new Map(),ertikazCacheUpdatedAt=null,ertikazLoadPromise=null,cacheTickerSearchCurrentQuery='';
+async function loadPublicErtikaz(){
+  if(ertikazLoadPromise)return ertikazLoadPromise;
+  ertikazLoadPromise=(async()=>{
+    try{
+      const r=await apiFetch('/.netlify/functions/ertikaz?action=read');
+      const d=await responseJSON(r);
+      if(!r.ok||!d?.ok)throw Error(d?.error||'تعذر تحميل كاش ارتكاز.');
+      const rows=Array.isArray(d?.data?.records)?d.data.records:[];
+      ertikazCacheMap=new Map(rows.map(x=>[String(x?.ticker||'').toUpperCase(),x]).filter(([k])=>k));
+      ertikazCacheUpdatedAt=d?.data?.updatedAt||null;
+      refreshVisibleErtikazLabels();
+      return d;
+    }catch(e){
+      // Ertikaz is an optional annotation in the scanner/favorites UI. A read
+      // failure must never block the normal search or favorites rendering.
+      console.warn('[ertikaz-cache] read failed',e?.message||e);
+      return null;
+    }finally{ertikazLoadPromise=null;}
+  })();
+  return ertikazLoadPromise;
+}
+function ertikazForTicker(ticker){return ertikazCacheMap.get(String(ticker||'').toUpperCase())||null;}
+function ertikazInlineHtml(ticker){
+  const row=ertikazForTicker(ticker);
+  if(!row)return '';
+  return ` <button type="button" class="ertikazInlineLink" data-ertikaz-inline-ticker="${escapeHtml(String(ticker||'').toUpperCase())}">ارتكاز</button>`;
+}
+function bindErtikazInlineButtons(root=document){
+  root.querySelectorAll?.('[data-ertikaz-inline-ticker]').forEach(btn=>{
+    if(btn.dataset.bound==='1')return;
+    btn.dataset.bound='1';
+    btn.addEventListener('click',e=>{
+      e.preventDefault();e.stopPropagation();
+      const row=ertikazForTicker(btn.dataset.ertikazInlineTicker);
+      if(row)openErtikazModal(row);
+    });
+  });
+}
+function refreshVisibleErtikazLabels(){
+  document.querySelectorAll('#results tr[data-ticker]').forEach(tr=>{
+    const cell=tr.cells?.[0];if(!cell)return;
+    const ticker=tr.dataset.ticker||'';
+    const old=cell.querySelector('.ertikazInlineLink');
+    const should=Boolean(ertikazForTicker(ticker));
+    if(should&&!old){cell.insertAdjacentHTML('beforeend',ertikazInlineHtml(ticker));bindErtikazInlineButtons(cell);}
+    else if(!should&&old)old.remove();
+  });
+  if($('sec-favorites')?.classList.contains('active'))renderFavorites();
+  if(cacheTickerSearchCurrentQuery)renderCacheTickerSearchResult(cacheTickerSearchMatches(cacheTickerSearchCurrentQuery),cacheTickerSearchCurrentQuery);
+}
+setInterval(()=>{if(sessionReady&&document.visibilityState==='visible')loadPublicErtikaz().catch(()=>{});},10*60*1000);
 let cacheRefreshBusy=false;
 async function refreshScannerCacheInBackground(){
   if(cacheRefreshBusy||document.hidden)return;
@@ -453,8 +505,8 @@ function formatCompactShares(value){
 }
 function addRow(r){
   const tr=document.createElement('tr');tr.dataset.ticker=r.ticker;tr.dataset.split=r.splitDate||'';
-  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b></td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
-  tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});$('results').prepend(tr);results++;$('count').textContent=results;return tr;
+  tr.innerHTML=`<td><b>${r.flag?r.flag+' ':''}${escapeHtml(r.ticker)}</b>${ertikazInlineHtml(r.ticker)}</td><td class="favCell"><button class="favBtn favToggle" data-ticker="${escapeHtml(r.ticker)}" data-split="${escapeHtml(r.splitDate||'')}" title="إضافة إلى المفضلة">${isFavorite(r.ticker,r.splitDate)?'★':'☆'}</button></td><td>$${fmt(r.splitOpen)}</td><td>$${fmt(r.target)}</td><td>${Number.isFinite(displayPrice(r))?'$'+fmt(displayPrice(r)):'—'}</td><td>${fmt(r.drop)}%</td><td>${r.splitDate||'—'}</td><td>${fmt(r.rsi)}</td><td>$${fmt(r.low)}</td><td>${r.lowDate||'—'}</td><td>${Number.isFinite(Number(r.shortShares))?Number(r.shortShares).toLocaleString():'—'}</td><td>${Number.isFinite(Number(r.borrowFee))?fmt(r.borrowFee,2)+'%':'—'}</td><td>${formatCompactShares(r.freeFloat)}</td>`;
+  tr.querySelector('.favToggle').onclick=()=>toggleFavorite({ticker:r.ticker,splitDate:r.splitDate,splitOpen:r.splitOpen});bindErtikazInlineButtons(tr);$('results').prepend(tr);results++;$('count').textContent=results;return tr;
 }
 
 async function getBars4H(t,from,to,key,signal){const path=`/v2/aggs/ticker/${encodeURIComponent(t)}/range/4/hour/${from}/${to}?adjusted=true&sort=asc&limit=50000`;const rows=(await getJSON(massive(path),3,signal)).results||[];return rows.filter(b=>Number(b?.l)>0&&Number(b?.h)>0&&Number(b?.c)>0);}
@@ -517,6 +569,7 @@ async function run(){
    const days=clampScannerDays(),drop=Number($("drop").value)||0,rsiMax=Number($("rsiMax").value)||30,maxPrice=Number($("maxPrice").value)||10; const shortRaw=$("shortMax").value.trim(); const shortMax=shortRaw===""?null:Math.max(0,Number(shortRaw));
    setStatus("جاري البحث...");
    const cache=await loadScannerCache({wait:true,maxAttempts:180});
+   await loadPublicErtikaz();
    if(!cache.ready||!scannerCache.length){setStatus(cache.buildError?`فشل تجهيز بيانات الباحث: ${escapeHtml(cache.buildError)}`:"بيانات الباحث قيد التجهيز لأول مرة. انتظر اكتمال الكاش ثم اضغط بحث مرة أخرى.","err");return;}
    // If the technical cache currently has no live prices, force one read of
    // the independent five-minute price lane before filtering. This prevents a
@@ -551,6 +604,7 @@ function cacheTickerSearchMatches(query){
   return scannerCache.filter(row=>normalizeCacheTickerQuery(row?.ticker)===q);
 }
 function renderCacheTickerSearchResult(rows,query){
+  cacheTickerSearchCurrentQuery=query;
   const out=$("cacheTickerSearchResult"),status=$("cacheTickerSearchStatus");
   if(!out||!status)return;
   out.innerHTML='';
@@ -572,7 +626,7 @@ function renderCacheTickerSearchResult(rows,query){
     const ticker=String(row?.ticker||'').toUpperCase();
     const splitDate=row?.splitDate||'';
     const on=isFavorite(ticker,splitDate);
-    tr.innerHTML=`<td><b>${escapeHtml(ticker)}</b></td><td>${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td>${escapeHtml(splitDate||'—')}</td><td>${fmt(row?.rsi)}</td><td><button type="button" class="btn ${on?'secondary':'start'} cacheTickerAddBtn">${on?'★ موجود في المفضلة':'⭐ إضافة إلى المفضلة'}</button></td>`;
+    tr.innerHTML=`<td><b>${escapeHtml(ticker)}</b>${ertikazInlineHtml(ticker)}</td><td>${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td>${escapeHtml(splitDate||'—')}</td><td>${fmt(row?.rsi)}</td><td><button type="button" class="btn ${on?'secondary':'start'} cacheTickerAddBtn">${on?'★ موجود في المفضلة':'⭐ إضافة إلى المفضلة'}</button></td>`;
     const btn=tr.querySelector('.cacheTickerAddBtn');
     btn.onclick=async()=>{
       if(isFavorite(ticker,splitDate)){
@@ -597,6 +651,7 @@ function renderCacheTickerSearchResult(rows,query){
         status.textContent=e?.message||'تعذر إضافة السهم إلى المفضلة.';
       }
     };
+    bindErtikazInlineButtons(tr);
     body.appendChild(tr);
   });
   table.appendChild(body);wrap.appendChild(table);out.appendChild(wrap);
@@ -618,6 +673,7 @@ async function searchTickerInCache(){
       status.textContent='جاري تحميل كاش الباحث…';
       await loadScannerCache({wait:true,maxAttempts:30});
     }
+    await loadPublicErtikaz();
     const rows=cacheTickerSearchMatches(query);
     renderCacheTickerSearchResult(rows,query);
   }catch(e){
@@ -631,7 +687,7 @@ $("pause").onclick=()=>{if(!running||stopped)return;paused=true;$("pause").disab
 $("resume").onclick=()=>{if(!running||stopped)return;paused=false;$("pause").disabled=false;$("resume").disabled=true;setStatus(`▶ تم استئناف البحث — النتائج الحالية: <b>${results}</b>.`);};
 $("stop").onclick=()=>{if(!running)return;stopped=true;paused=false;if(scanAbortController)scanAbortController.abort();$("stop").disabled=true;$("pause").disabled=true;$("resume").disabled=true;$("stop").textContent="⏹ جارٍ الإيقاف...";setStatus(`جارٍ إيقاف البحث... النتائج الحالية: <b>${results}</b>.`);};
 
-async function loadFavorites(){try{const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث الأسعار…';refreshFavoriteData(false);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
+async function loadFavorites(){try{await loadPublicErtikaz();const r=await apiFetch('/.netlify/functions/auth?action=favorites');const d=await responseJSON(r);if(!r.ok)throw Error(d.error||'تعذر تحميل المفضلة.');favoriteItems=d.favorites||[];renderFavorites();if(favoriteItems.length){$('favoritesStatus').textContent='جاري تحديث الأسعار…';refreshFavoriteData(false);}}catch(e){if(sessionReady)$('favoritesStatus').textContent=e.message||'تعذر تحميل المفضلة.';}}
 function renderFavorites(){
   const body=$('favoritesResults');if(!body)return;
   body.innerHTML='';$('favoritesCount').textContent=favoriteItems.length.toLocaleString();$('favoritesEmpty').style.display=favoriteItems.length?'none':'block';
@@ -639,8 +695,8 @@ function renderFavorites(){
     const tr=document.createElement('tr');tr.dataset.ticker=f.ticker;tr.dataset.split=f.splitDate||'';
     const x=cacheFind(f)||{};
     const price=displayPrice(x),change=Number(x?.changePct),short=Number(x?.shortShares),fee=Number(x?.borrowFee),ff=formatCompactShares(x?.freeFloat);
-    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b></div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
-    tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
+    tr.innerHTML=`<td><div class="favTickerCell"><button class="favRemoveMini" title="إزالة من المفضلة">★</button><b>${escapeHtml(f.ticker)}</b>${ertikazInlineHtml(f.ticker)}</div></td><td><button class="alertBtn ${alertSettings[f.ticker]?.enabled?"on":""}" title="إعداد تنبيه السهم">🔔</button></td><td class="fv-price">${Number.isFinite(price)?'$'+fmt(price):'—'}</td><td><button class="testBtn favTest">🧪 اختبار</button></td><td><button class="detailsBtn favDetails">عرض التفاصيل</button></td><td class="fv-short">${Number.isFinite(short)?short.toLocaleString():'—'}</td><td class="fv-fee">${Number.isFinite(fee)?fmt(fee,2)+'%':'—'}</td><td class="fv-float">${ff!=='—'?ff:'—'}</td><td class="fv-change">${Number.isFinite(change)?(change>=0?'+':'')+fmt(change)+'%':'—'}</td>`;
+    tr.querySelector('.favRemoveMini').onclick=()=>toggleFavorite({ticker:f.ticker,splitDate:f.splitDate});bindErtikazInlineButtons(tr);tr.querySelector('.alertBtn').onclick=()=>openAlertModal(f);tr.querySelector('.favTest').onclick=()=>runFavoriteTest(f,tr);tr.querySelector('.favDetails').onclick=()=>runFavoriteDetails(f,tr);body.appendChild(tr);
   }
 }
 
@@ -843,7 +899,7 @@ async function loadMe(){
       if(r.status>=500){throw Error(d.error||`HTTP ${r.status}`);}
       if(!r.ok||!d.authenticated){localStorage.removeItem("scanner_session_hint");sessionKnown=false;sessionReady=false;applyMaintenanceState({siteMode:"normal"});document.body.classList.remove("session-ok");$("authOverlay").classList.remove("hidden");return false;}
       applyMaintenanceState({siteMode:"normal"});
-      sessionReady=true;localStorage.setItem("scanner_session_hint","1");sessionKnown=true;window.currentUserEmail=d.user?.email||"";loadAlertSettings();loadNotificationHistory();document.body.classList.add("session-ok");await loadScannerSettings();loadFavorites();loadScannerCache().catch(()=>{});$("authOverlay").classList.add("hidden");showResearchNotice();loadMySupportReplies();
+      sessionReady=true;localStorage.setItem("scanner_session_hint","1");sessionKnown=true;window.currentUserEmail=d.user?.email||"";loadAlertSettings();loadNotificationHistory();document.body.classList.add("session-ok");await loadScannerSettings();loadPublicErtikaz();loadFavorites();loadScannerCache().catch(()=>{});$("authOverlay").classList.add("hidden");showResearchNotice();loadMySupportReplies();
       const plan=(window.sitePricing?.plans||[]).find(x=>x.id===d.user.plan)?.label||d.user.plan||"—";
       const rem=d.user.expiresAt?Math.max(0,Math.ceil((new Date(d.user.expiresAt+"T23:59:59").getTime()-Date.now())/86400000)):null;
       $("infoEmail").textContent=d.user.email||d.user.username||"—";

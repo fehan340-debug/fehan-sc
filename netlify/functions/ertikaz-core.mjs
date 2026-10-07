@@ -1,4 +1,5 @@
 import { getDataStore, getSiteSettings } from '../../lib.js';
+import { isUsEquityTradingDay, etParts } from '../../market-calendar.mjs';
 
 // Ertikaz model v1
 // Daily: RSI < 30.
@@ -58,6 +59,7 @@ async function getCache(){
 }
 function rsiDaily(row){const n=Number(row?.rsi);return Number.isFinite(n)?n:null;}
 function shortAvailable(row){const n=Number(row?.shortShares);return Number.isFinite(n)?n:null;}
+function currentETMinutes(date=new Date()){const p=etParts(date);return Number(p.hour||0)*60+Number(p.minute||0);}
 
 export function detectErtikazSequence(bars,splitDate){
   const b=(Array.isArray(bars)?bars:[])
@@ -345,7 +347,17 @@ export async function collectErtikazData({force=false}={}){
 }
 export async function runErtikaz({force=false}={}){
   const today=todayET(),store=getDataStore();
-  if(!force){const settings=await getSiteSettings();if(settings.auto_update_enabled===false||settings.ertikazAutoUpdateEnabled===false)return{ok:true,skipped:true,reason:'ertikaz-automatic-updates-disabled'};}
+  if(!force){
+    const settings=await getSiteSettings();
+    if(settings.auto_update_enabled===false||settings.ertikazAutoUpdateEnabled===false)return{ok:true,skipped:true,reason:'ertikaz-automatic-updates-disabled'};
+    // Daily candles must be complete. Automatic Ertikaz is therefore allowed
+    // only after the US regular session has closed on an actual trading day.
+    // The GitHub workflow may wake up in either DST schedule window; this guard
+    // makes the exact New York time authoritative and prevents a partial daily
+    // candle from being cached as today's model result.
+    if(!isUsEquityTradingDay(new Date()))return{ok:true,skipped:true,reason:'not-us-trading-day',date:today};
+    if(currentETMinutes(new Date())<965)return{ok:true,skipped:true,reason:'waiting-for-daily-close',date:today};
+  }
   if(!force){const existing=await store.get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);if(existing?.date===today)return{ok:true,skipped:true,date:today,total:Number(existing.universeTickers||0)};}
   const collected=await collectErtikazData({force}); if(!collected.ok)return collected;
   const results=[];let done=0; await store.setJSON(STATUS_KEY,{state:'analyzing',mode:'analysis',timeframe:'1D',date:today,total:collected.total,processed:0});
@@ -358,5 +370,36 @@ export async function runErtikaz({force=false}={}){
   await store.setJSON(RESULT_KEY,payload);await store.setJSON(STATUS_KEY,{state:'ready',mode:'analysis',timeframe:'1D',date:today,completedAt:payload.updatedAt,total:results.length,processed:results.length,qualifiedCount:payload.qualifiedCount,collection:{updated:collected.updated,unchanged:collected.unchanged,failed:collected.failed}});
   return{ok:true,date:today,total:results.length,processed:results.length,qualified:payload.qualifiedCount,updatedAt:payload.updatedAt};
 }
+export async function refreshErtikazShortFromCache(){
+  const store=getDataStore();
+  const settings=await getSiteSettings();
+  if(settings.auto_update_enabled===false||settings.ertikazAutoUpdateEnabled===false)return{ok:true,skipped:true,reason:'ertikaz-automatic-updates-disabled'};
+  const payload=await store.get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);
+  if(!payload?.ready||!Array.isArray(payload.records)||!payload.records.length)return{ok:true,skipped:true,reason:'no-ertikaz-result'};
+  const cache=await getCache();
+  const rows=Array.isArray(cache?.records)?cache.records:[];
+  const byTicker=new Map(rows.map(x=>[cleanTicker(x?.ticker),x]));
+  let changed=0;
+  const records=payload.records.map(item=>{
+    const ticker=cleanTicker(item?.ticker), row=byTicker.get(ticker);
+    if(!ticker||!row||!Array.isArray(item?.checks))return item;
+    const short=shortAvailable(row);
+    const checks=item.checks.map(c=>{
+      if(c?.key!=='shortAvailable')return c;
+      const next={...c,passed:short!==null&&short<=10000,value:short,detail:short===null?'Short Available غير متاح':`${short.toLocaleString()} سهم متاح`};
+      if(JSON.stringify(next)!==JSON.stringify(c))changed++;
+      return next;
+    });
+    const passedCount=checks.filter(x=>x?.passed).length,totalChecks=checks.length||7,qualified=passedCount===totalChecks;
+    return {...item,shortAvailable:short,checks,passedCount,totalChecks,qualified,statusLabel:qualified?'ارتكاز مكتمل':'ارتكاز — شروط غير مكتملة',shortUpdatedAt:row.shortDataUpdatedAt||row.borrowUpdatedAt||null};
+  });
+  if(!changed)return{ok:true,changed:0,updatedAt:payload.updatedAt||null};
+  const updatedAt=new Date().toISOString();
+  const next={...payload,records,qualifiedCount:records.filter(x=>x?.qualified).length,updatedAt,shortUpdatedAt:cache?.shortUpdatedAt||cache?.borrowUpdatedAt||updatedAt,source:'central-cache-daily-rsi-short-plus-massive-daily-sequence'};
+  await store.setJSON(RESULT_KEY,next);
+  await store.setJSON(STATUS_KEY,{state:'ready',mode:'short-refresh',timeframe:'1D',date:payload.date||todayET(),completedAt:updatedAt,total:records.length,processed:records.length,qualifiedCount:next.qualifiedCount,shortUpdatedAt:next.shortUpdatedAt});
+  return{ok:true,changed,updatedAt,qualified:next.qualifiedCount,total:records.length};
+}
+
 export async function readErtikaz(){return await getDataStore().get(RESULT_KEY,{type:'json',consistency:'strong'}).catch(()=>null);}
 export async function readErtikazStatus(){return await getDataStore().get(STATUS_KEY,{type:'json',consistency:'strong'}).catch(()=>null);}
